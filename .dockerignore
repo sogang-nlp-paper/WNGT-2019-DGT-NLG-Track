@@ -10,8 +10,6 @@ data/
 models/
 *.out
 *.t7
-*.tgz
-install-cudnn.sh
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -114,4 +112,4 @@ ENV/
 .mypy_cache/
 
 # Tensorboard
-runs/
+r
