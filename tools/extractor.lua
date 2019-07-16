@@ -5,7 +5,7 @@ require 'cutorch'
 require 'cunn'
 require 'cudnn'
 --require 'nngraph'
-require 'onmt.modules.MarginalNLLCriterion'
+require 'onmt-lua.modules.MarginalNLLCriterion'
 
 local stringx = require('pl.stringx')
 
