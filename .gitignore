@@ -9,6 +9,7 @@ multi-bleu.perl
 data/
 models/
 *.out
+*.t7
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
