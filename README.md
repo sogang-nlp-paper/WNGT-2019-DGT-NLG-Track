@@ -44,6 +44,7 @@ python2 tools/data_utils.py -mode prep_gen_data -gen_fi models/pred.txt -dict_pf
 
 # perform evaluation
 th tools/extractor.lua -gpuid 1 -datafile data/rotowire/roto-ie.h5 -preddata models/pred.h5 -dict_pfx data/rotowire/roto-ie -just_eval # run on docker
-python2 tools/non_rg_metrics.py data/rotowire/roto-gold-val.tuples.txt models/pred.h5-tuples.txt
+python2 tools/non_rg_metrics.py data/rotowire/roto-gold-test.tuples.txt models/pred.h5-tuples.txt
  ```
-
+`extractor.lua` measures Relation Generation(RG) score. Precision(`P%` in the original paper) and the number(`#`) corresponds to `nodup prec` and `nodup correct / 727`, respectiely(727 is the number of test samples).
+`non_rg_metrics.py` calculates Content Selection(CS) and Content Ordering(CO) scores. Precision(`P%`) corresponds to `prec` and recall(`R%`) `rec`. Content ordering measured in normalized Damerau-Levenshtein distance(`DLD%`) is `avg score`.
