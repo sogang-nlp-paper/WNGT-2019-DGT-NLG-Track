@@ -7,6 +7,11 @@ from torchtext.data import Field, RawField
 
 from onmt.inputters.datareader_base import DataReaderBase
 
+from pytorch_transformers import BertTokenizer
+# Load pre-trained model tokenizer (vocabulary)
+# ['[CLS]', 'who', 'was', 'jim', 'henson', '?', '[SEP]']
+bert_tokenizer = BertTokenizer.from_pretrained('bert-base-cased')
+
 
 class TextDataReader(DataReaderBase):
     def read(self, sequences, side, _dir=None):
@@ -66,6 +71,32 @@ def _feature_tokenize(
         tokens = tokens[:truncate]
     if feat_delim is not None:
         tokens = [t.split(feat_delim)[layer] for t in tokens]
+    return tokens
+
+
+def _feature_bert_tokenize(
+        string, layer=0, tok_delim=None, feat_delim=None, truncate=None):
+    """Split apart word features (like POS/NER tags) from the tokens.
+
+    Args:
+        string (str): A string with ``tok_delim`` joining tokens and
+            features joined by ``feat_delim``. For example,
+            ``"hello|NOUN|'' Earth|NOUN|PLANET"``.
+        layer (int): Which feature to extract. (Not used if there are no
+            features, indicated by ``feat_delim is None``). In the
+            example above, layer 2 is ``'' PLANET``.
+        truncate (int or NoneType): Restrict sequences to this length of
+            tokens.
+
+    Returns:
+        List[str] of tokens.
+    """
+
+    tokens = string.split(tok_delim)
+    if truncate is not None:
+        tokens = tokens[:truncate]
+    if feat_delim is not None:
+        tokens = [bert_tokenizer.tokenize(t.split(feat_delim)[layer]) for t in tokens]
     return tokens
 
 
@@ -179,7 +210,8 @@ def text_fields(**kwargs):
     for i in range(n_feats + 1):
         name = base_name + "_feat_" + str(i - 1) if i > 0 else base_name
         tokenize = partial(
-            _feature_tokenize,
+            # _feature_tokenize,
+            _feature_bert_tokenize,
             layer=i,
             truncate=truncate,
             feat_delim=feat_delim)

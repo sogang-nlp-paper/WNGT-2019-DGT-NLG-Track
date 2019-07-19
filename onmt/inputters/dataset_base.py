@@ -60,6 +60,26 @@ def _dynamic_dict(example, src_field, tgt_field):
     return src_ex_vocab, example
 
 
+def _bert_base_dict(example, src_field, tgt_field):
+    src = src_field.tokenize(example["src"])
+    src_flat = list(chain(*src))
+    # make a small vocab containing just the tokens in the source sequence
+    unk = '[UNK]'
+    src_ex_vocab = Vocab(Counter(src_flat), specials=[unk])
+    unk_idx = src_ex_vocab.stoi[unk]
+    # Map source tokens to indices in the dynamic dict.
+    src_map = torch.LongTensor([src_ex_vocab.stoi[w] for w in src_flat])
+    example["src_map"] = src_map
+    example["src_ex_vocab"] = src_ex_vocab
+
+    if "tgt" in example:
+        tgt = tgt_field.tokenize(example["tgt"])
+        mask = torch.LongTensor(
+            [unk_idx] + [src_ex_vocab.stoi[w] for w in tgt] + [unk_idx])
+        example["alignment"] = mask
+    return src_ex_vocab, example
+
+
 class Dataset(TorchtextDataset):
     """Contain data and process it.
 
@@ -123,7 +143,9 @@ class Dataset(TorchtextDataset):
                 src_field = fields['src']
                 tgt_field = fields['tgt']
                 # this assumes src_field and tgt_field are both text
-                src_ex_vocab, ex_dict = _dynamic_dict(
+                # src_ex_vocab, ex_dict = _dynamic_dict(
+                #     ex_dict, src_field.base_field, tgt_field.base_field)
+                src_ex_vocab, ex_dict = _bert_base_dict(
                     ex_dict, src_field.base_field, tgt_field.base_field)
                 self.src_vocabs.append(src_ex_vocab)
             ex_fields = {k: [(k, v)] for k, v in fields.items() if
