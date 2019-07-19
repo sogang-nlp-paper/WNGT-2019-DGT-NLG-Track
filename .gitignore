@@ -11,7 +11,6 @@ models/
 *.out
 *.t7
 *.tgz
-install-cudnn.sh
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

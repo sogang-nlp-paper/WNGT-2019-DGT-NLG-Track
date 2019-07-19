@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 """Train models."""
 import os
+import sys
 import signal
 import torch
+from setproctitle import setproctitle
 
 import onmt.opts as opts
 import onmt.utils.distributed
@@ -190,11 +192,24 @@ def _get_parser():
     opts.config_opts(parser)
     opts.model_opts(parser)
     opts.train_opts(parser)
+    opts.procname_opts(parser)
     return parser
+
+
+def save_args(opt):
+    dirname = os.path.dirname(opt.save_model)
+    filename ='args.txt'
+    savepath = os.path.join(dirname, filename)
+    os.makedirs(dirname)
+    args = ' '.join(sys.argv)
+    with open(savepath, 'w') as f:
+        f.write(args)
 
 
 if __name__ == "__main__":
     parser = _get_parser()
 
     opt = parser.parse_args()
+    setproctitle(opt.proc_name)
+    save_args(opt)
     main(opt)
