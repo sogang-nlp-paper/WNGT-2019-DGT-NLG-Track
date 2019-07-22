@@ -10,6 +10,8 @@ data/
 models/
 *.out
 *.t7
+.gitignore
+.git/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

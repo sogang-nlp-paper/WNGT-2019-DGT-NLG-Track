@@ -13,6 +13,11 @@ def config_opts(parser):
                help='config file save path')
 
 
+def procname_opts(parser):
+    parser.add('-proc_name', '--proc_name', required=True,
+               help='specify process name')
+
+
 def model_opts(parser):
     """
     These options are passed to the construction of the model.
