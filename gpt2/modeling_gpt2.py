@@ -582,7 +582,7 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         for layer, heads in heads_to_prune.items():
             self.h[layer].attn.prune_heads(heads)
 
-    def forward(self, input_ids, position_ids=None, token_type_ids=None, label=None, past=None, head_mask=None):
+    def forward(self, input_ids, position_ids=None, token_type_ids=None, labels=None, past=None, head_mask=None):
         if past is None:
             past_length = 0
             past = [None] * len(self.h)
@@ -606,10 +606,10 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         else:
             head_mask = [None] * self.config.n_layer
 
-        # TODO entity embedding (N, 602, 4, 12) => (N, 602, 768)
+        # entity embedding (N, 602, 4, 12) => (N, 602, 768)
         batch_size = input_ids.size(0)
-        n_record = input_ids.size(1)
         # input_ids = input_ids.view(batch_size, n_record, -1)
+        n_record = input_ids.size(1)
         n_features = input_ids.size(2)
         inputs_embeds = input_ids.new_zeros((batch_size, n_record, n_features, self.n_embd)).float()
         for i in range(n_features):
@@ -622,7 +622,7 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         inputs_embeds = self.ent_enc(inputs_embeds.view(batch_size, n_record, -1))  # => (N, 602, 768)
 
         input_shape = input_ids.size()
-        input_ids = input_ids.view(-1, input_ids.size(-1))
+        # input_ids = input_ids.view(-1, input_ids.size(-1))
         # position_ids = position_ids.view(-1, position_ids.size(-1))
 
         # inputs_embeds = self.wte(input_ids)
@@ -637,25 +637,27 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
 
         hidden_states = self.drop(hidden_states)
 
+        # TODO fit output_shape ?
         output_shape = input_shape + (hidden_states.size(-1),)
 
         presents = ()
         all_attentions = []
         all_hidden_states = ()
         for i, (block, layer_past) in enumerate(zip(self.h, past)):
-            if self.output_hidden_states:
+            if self.output_hidden_states:  # "output_hidden_states": false
                 all_hidden_states = all_hidden_states + (hidden_states.view(*output_shape),)
 
             outputs = block(hidden_states, layer_past, head_mask[i])
             hidden_states, present = outputs[:2]
             presents = presents + (present,)
 
-            if self.output_attentions:
+            if self.output_attentions:  # "output_attentions": false,
                 all_attentions.append(outputs[2])
 
-        hidden_states = self.ln_f(hidden_states)
+        hidden_states = self.ln_f(hidden_states)  # LayerNorm
+        # hidden_states = (N, 602, 768)
 
-        hidden_states = hidden_states.view(*output_shape)
+        # hidden_states = hidden_states.view(*output_shape)
         # Add last hidden state
         if self.output_hidden_states:
             all_hidden_states = all_hidden_states + (hidden_states,)
@@ -668,7 +670,27 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
             attention_output_shape = input_shape[:-1] + (-1,) + all_attentions[0].shape[-2:]
             all_attentions = tuple(t.view(*attention_output_shape) for t in all_attentions)
             outputs = outputs + (all_attentions,)
-        return outputs  # last hidden state, presents, (all hidden_states), (attentions)
+        # return outputs  # last hidden state, presents, (all hidden_states), (attentions)
+
+        # LM head
+        transformer_outputs = outputs
+        hidden_states = transformer_outputs[0]
+        lm_logits = self.lm_head(hidden_states)  # lm_logits = (N, 602, vocab_size)
+
+        outputs = (lm_logits,) + transformer_outputs[1:]
+        if labels is not None:  # labels = (N, 388)
+            # Shift so that tokens < n predict n
+            # shift_logits = lm_logits[..., :-1, :].contiguous()
+            # shift_labels = labels[..., 1:].contiguous()
+            shift_logits = lm_logits.contiguous()
+            shift_labels = labels.contiguous()
+            # Flatten the tokens
+            loss_fct = CrossEntropyLoss(ignore_index=-1)
+            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)),
+                            shift_labels.view(-1))
+            # outputs = (loss,) + outputs
+            return loss
+        return outputs  # (loss), lm_logits, presents, (all hidden_states), (attentions)
 
 
 @add_start_docstrings("""The GPT2 Model transformer with a language modeling head on top

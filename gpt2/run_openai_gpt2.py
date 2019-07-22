@@ -74,7 +74,7 @@ def load_rotowire_dataset(dataset_path, _type="train"):
     return src_data, tgt_data
 
 
-def pre_process_datasets(src, tgt, device):
+def pre_process_datasets(device, src, tgt, tgt_length, pad_token):
     """ pre-process Rotowire dataset
     set padding for WPE
     'F|Stephen Curry|START_POSITION|HOME'
@@ -96,11 +96,13 @@ def pre_process_datasets(src, tgt, device):
                 assert len(entity[i]) == src_max_len
 
     # padding for tgt
-    tgt_max_len = max([len(summary) for summary in tgt])
+    # tgt_max_len = max([len(summary) for summary in tgt])
+    tgt_max_len = tgt_length
     for i, summary in enumerate(tgt):
+        summary = summary + [pad_token]
         pad_size = tgt_max_len - len(summary)
         if pad_size > 0:
-            tgt[i] = summary + ([0] * pad_size)
+            tgt[i] = summary + ([pad_token] * pad_size)
         assert len(tgt[i]) == tgt_max_len
 
     src = torch.tensor(src, dtype=torch.long).to(device)  # (N, 602, 4, src_max_len)
@@ -115,6 +117,7 @@ def main():
                         help='pretrained model name')
     parser.add_argument("--do_train", action='store_true', help="Whether to run training.")
     parser.add_argument("--do_eval", action='store_true', help="Whether to run eval on the dev set.")
+    parser.add_argument("--do_generate", action='store_true')
     parser.add_argument("--output_dir", default=None, type=str, required=True,
                         help="The output directory where the model predictions and checkpoints will be written.")
     # parser.add_argument('--train_dataset', type=str, default='')
@@ -162,9 +165,9 @@ def main():
     # Load tokenizer and model
     # This loading functions also add new tokens and embeddings called `special tokens`
     # These new embeddings will be fine-tuned on the Rotowire dataset
-    # special_tokens = ['_start_', '_delimiter_', '_classify_']
-    config = GPT2Config.from_pretrained(args.model_name)
+
     tokenizer = GPT2Tokenizer.from_pretrained(args.model_name)
+    pad_token = tokenizer.convert_tokens_to_ids("<|endoftext|>")
     # special_tokens_ids = list(tokenizer.convert_tokens_to_ids(token) for token in special_tokens)
     model = GPT2EntityEncoderLMModel.from_pretrained(args.model_name)
     model.to(device)
@@ -201,11 +204,12 @@ def main():
     # train_tensor_dataset = pre_process_datasets(train_src, train_tgt)
     # eval_tensor_dataset = pre_process_datasets(eval_src, eval_tgt)
 
-    train_data = pre_process_datasets(train_src, train_tgt, device)
+    tgt_length = 602
+    train_data = pre_process_datasets(device, train_src, train_tgt, tgt_length, pad_token)
     train_sampler = RandomSampler(train_data)
     train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
 
-    eval_data = pre_process_datasets(eval_src, eval_tgt, device)
+    eval_data = pre_process_datasets(device, eval_src, eval_tgt, tgt_length, pad_token)
     eval_sampler = SequentialSampler(eval_data)
     eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
 
@@ -235,15 +239,15 @@ def main():
             for step, batch in enumerate(tqdm_bar):
                 batch = tuple(t.to(device) for t in batch)
                 input_ids, lm_labels = batch
-                losses = model(input_ids, label=lm_labels)
-                loss = args.lm_coef * losses[0] + losses[1]
+                loss = model(input_ids, labels=lm_labels)
+                # loss = args.lm_coef * losses[0] + losses[1]
                 loss.backward()
                 optimizer.step()
                 optimizer.zero_grad()
                 tr_loss += loss.item()
                 exp_average_loss = loss.item() if exp_average_loss is None else 0.7*exp_average_loss+0.3*loss.item()
                 nb_tr_steps += 1
-                tqdm_bar.desc = "Training loss: {:.2e} lr: {:.2e}".format(exp_average_loss, optimizer.get_lr()[0])
+                tqdm_bar.desc = "Training loss: {:.4f} lr: {:.4f}".format(exp_average_loss, optimizer.defaults["lr"])
 
     # Save a trained model
     if args.do_train:
@@ -259,8 +263,8 @@ def main():
         tokenizer.save_vocabulary(args.output_dir)
 
         # Load a trained model and vocabulary that you have fine-tuned
-        model = OpenAIGPTDoubleHeadsModel.from_pretrained(args.output_dir)
-        tokenizer = OpenAIGPTTokenizer.from_pretrained(args.output_dir)
+        model = GPT2EntityEncoderLMModel.from_pretrained(args.output_dir)
+        tokenizer = GPT2Tokenizer.from_pretrained(args.output_dir)
         model.to(device)
 
     if args.do_eval:
@@ -269,16 +273,16 @@ def main():
         nb_eval_steps, nb_eval_examples = 0, 0
         for batch in tqdm(eval_dataloader, desc="Evaluating"):
             batch = tuple(t.to(device) for t in batch)
-            input_ids, mc_token_ids, lm_labels, mc_labels = batch
+            input_ids, lm_labels = batch
             with torch.no_grad():
-                _, mc_loss = model(input_ids, mc_token_ids, lm_labels, mc_labels)
-                _, mc_logits = model(input_ids, mc_token_ids)
+                lm_loss = model(input_ids, labels=lm_labels)
+                lm_logits, _ = model(input_ids)
 
-            mc_logits = mc_logits.detach().cpu().numpy()
-            mc_labels = mc_labels.to('cpu').numpy()
-            tmp_eval_accuracy = accuracy(mc_logits, mc_labels)
+            lm_logits = lm_logits.detach().cpu().numpy()
+            lm_labels = lm_labels.to('cpu').numpy()
+            tmp_eval_accuracy = accuracy(lm_logits, lm_labels)
 
-            eval_loss += mc_loss.mean().item()
+            eval_loss += lm_loss.mean().item()
             eval_accuracy += tmp_eval_accuracy
 
             nb_eval_examples += input_ids.size(0)
@@ -297,6 +301,31 @@ def main():
             for key in sorted(result.keys()):
                 logger.info("  %s = %s", key, str(result[key]))
                 writer.write("%s = %s\n" % (key, str(result[key])))
+
+    if args.do_generate:
+        # FIXME this is only for test
+        test_src, test_tgt = load_rotowire_dataset(args.dataset_path, "valid_temp")
+        test_src, test_tgt = tokenize_and_encode([test_src, test_tgt])
+        test_data = pre_process_datasets(device, test_src, test_tgt, tgt_length, pad_token)
+        test_sampler = SequentialSampler(test_data)
+        test_dataloader = DataLoader(test_data, sampler=test_sampler, batch_size=1)
+        model.eval()
+
+        for batch in test_dataloader:
+            batch = tuple(t.to(device) for t in batch)
+            input_ids, lm_labels = batch
+            with torch.no_grad():
+                lm_logits, _ = model(input_ids)
+
+            lm_logits = lm_logits.detach().cpu().numpy()
+            lm_labels = lm_labels.to('cpu').numpy()
+            outputs = np.argmax(lm_logits[0], axis=1)
+
+            print(tokenizer.decode(lm_labels[0][:300]))
+            print("---------------------------------------------------------------")
+            print(tokenizer.decode(outputs[:300]))
+            print("")
+
 
 if __name__ == '__main__':
     main()
