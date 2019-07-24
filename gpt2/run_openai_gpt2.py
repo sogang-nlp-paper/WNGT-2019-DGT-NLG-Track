@@ -39,6 +39,8 @@ import torch
 from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
                               TensorDataset)
 
+from torch.nn import CrossEntropyLoss
+
 from pytorch_transformers import (OpenAIGPTDoubleHeadsModel, OpenAIGPTTokenizer,
                                   GPT2Tokenizer, GPT2Config,
                                   # GPT2LMHeadModel,
@@ -59,6 +61,31 @@ def accuracy(out, labels):
     return np.sum(outputs == labels)
 
 
+def tokenize_and_encode(obj, tokenizer):
+    """ Tokenize and encode a nested object """
+    if isinstance(obj, str):
+        return tokenizer.convert_tokens_to_ids(tokenizer.tokenize(obj))
+    # elif isinstance(obj, list):
+    #     return list(tokenize_and_encode(e) for e in obj)
+    return list(tokenize_and_encode(o, tokenizer) for o in obj)
+
+
+def encode_dataset(args, device, tokenizer, pad_token, _type="train"):
+    logger.info("Encoding dataset...")
+    # FIXME when you train
+    src, tgt = load_rotowire_dataset(args.dataset_path, _type)
+    if os.path.exists(os.path.join(args.dataset_path, _type + ".pt")):
+        tensor_dataset = torch.load(os.path.join(args.dataset_path, _type + ".pt"))
+        logger.info("load %s" % os.path.join(args.dataset_path, _type + ".pt"))
+    else:
+        datasets = (src, tgt)
+        src, tgt = tokenize_and_encode(datasets, tokenizer)
+        tensor_dataset = pre_process_datasets(device, src, tgt, pad_token)
+        torch.save(tensor_dataset, os.path.join(args.dataset_path, _type + ".pt"))
+        logger.info("save %s" % os.path.join(args.dataset_path, _type + ".pt"))
+    return tensor_dataset
+
+
 def load_rotowire_dataset(dataset_path, _type="train"):
     src_path = os.path.join(dataset_path, 'src_'+_type+'.txt')
     tgt_path = os.path.join(dataset_path, 'tgt_'+_type+'.txt')
@@ -74,7 +101,7 @@ def load_rotowire_dataset(dataset_path, _type="train"):
     return src_data, tgt_data
 
 
-def pre_process_datasets(device, src, tgt, tgt_length, pad_token):
+def pre_process_datasets(device, src, tgt, pad_token):
     """ pre-process Rotowire dataset
     set padding for WPE
     'F|Stephen Curry|START_POSITION|HOME'
@@ -96,13 +123,12 @@ def pre_process_datasets(device, src, tgt, tgt_length, pad_token):
                 assert len(entity[i]) == src_max_len
 
     # padding for tgt
-    # tgt_max_len = max([len(summary) for summary in tgt])
-    tgt_max_len = tgt_length
+    tgt_max_len = max([len(summary) for summary in tgt])
+    # tgt_max_len = tgt_length
     for i, summary in enumerate(tgt):
         summary = summary + [pad_token]
         pad_size = tgt_max_len - len(summary)
-        if pad_size > 0:
-            tgt[i] = summary + ([pad_token] * pad_size)
+        tgt[i] = summary + ([pad_token] * pad_size) if pad_size > 0 else summary[:tgt_max_len]
         assert len(tgt[i]) == tgt_max_len
 
     src = torch.tensor(src, dtype=torch.long).to(device)  # (N, 602, 4, src_max_len)
@@ -118,10 +144,9 @@ def main():
     parser.add_argument("--do_train", action='store_true', help="Whether to run training.")
     parser.add_argument("--do_eval", action='store_true', help="Whether to run eval on the dev set.")
     parser.add_argument("--do_generate", action='store_true')
+    parser.add_argument("--do_save", action='store_true')
     parser.add_argument("--output_dir", default=None, type=str, required=True,
                         help="The output directory where the model predictions and checkpoints will be written.")
-    # parser.add_argument('--train_dataset', type=str, default='')
-    # parser.add_argument('--eval_dataset', type=str, default='')
     parser.add_argument('--dataset_path', type=str, default='')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--num_train_epochs', type=int, default=3)
@@ -134,6 +159,8 @@ def main():
     parser.add_argument('--weight_decay', type=float, default=0.01)
     parser.add_argument('--lm_coef', type=float, default=0.9)
     parser.add_argument('--n_valid', type=int, default=374)
+    parser.add_argument('--early_stop', action='store_true')
+    parser.add_argument('--early_stop_tolerance', type=int, default=3)
 
     parser.add_argument('--server_ip', type=str, default='', help="Can be used for distant debugging.")
     parser.add_argument('--server_port', type=str, default='', help="Can be used for distant debugging.")
@@ -156,8 +183,8 @@ def main():
     n_gpu = torch.cuda.device_count()
     logger.info("device: {}, n_gpu {}".format(device, n_gpu))
 
-    if not args.do_train and not args.do_eval:
-        raise ValueError("At least one of `do_train` or `do_eval` must be True.")
+    # if not args.do_train and not args.do_eval:
+    #     raise ValueError("At least one of `do_train` or `do_eval` must be True.")
 
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
@@ -177,39 +204,17 @@ def main():
         raise FileNotFoundError("data path not found")
         # roc_stories = cached_path(ROCSTORIES_URL)
 
-    def tokenize_and_encode(obj):
-        """ Tokenize and encode a nested object """
-        if isinstance(obj, str):
-            return tokenizer.convert_tokens_to_ids(tokenizer.tokenize(obj))
-        # elif isinstance(obj, list):
-        #     return list(tokenize_and_encode(e) for e in obj)
-        return list(tokenize_and_encode(o) for o in obj)
-    logger.info("Encoding dataset...")
+    if args.do_train:
+        # FIXME when you train
+        # train_data = encode_dataset(args, device, tokenizer, pad_token, _type="train")
+        train_data = encode_dataset(args, device, tokenizer, pad_token, _type="valid_temp")
 
-    # FIXME when you train
-    # train_src, train_tgt = load_rotowire_dataset(args.dataset_path, "train")
-    train_src, train_tgt = load_rotowire_dataset(args.dataset_path, "valid_temp")
-    # eval_src, eval_tgt = load_rotowire_dataset(args.dataset_path, "valid")
-    eval_src, eval_tgt = train_src, train_tgt
+    # eval_data = encode_dataset(args, device, tokenizer, pad_token, _type="valid")
+    eval_data = encode_dataset(args, device, tokenizer, pad_token, _type="valid_temp")
 
-    datasets = (train_src, train_tgt, eval_src, eval_tgt)
-    train_src, train_tgt, eval_src, eval_tgt = tokenize_and_encode(datasets)
-
-    # Compute the max input length for the Transformer
-    # max_length = model.config.n_positions - 2  # n.positions = 1024
-    # input_length = max([len(cont[:max_length]) + 2 for dataset in encoded_datasets for cont in dataset])
-    # input_length = min(input_length, model.config.n_positions)  # Max size of input for the pre-trained model
-
-    # Prepare inputs tensors and dataloaders
-    # train_tensor_dataset = pre_process_datasets(train_src, train_tgt)
-    # eval_tensor_dataset = pre_process_datasets(eval_src, eval_tgt)
-
-    tgt_length = 602
-    train_data = pre_process_datasets(device, train_src, train_tgt, tgt_length, pad_token)
     train_sampler = RandomSampler(train_data)
     train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
 
-    eval_data = pre_process_datasets(device, eval_src, eval_tgt, tgt_length, pad_token)
     eval_sampler = SequentialSampler(eval_data)
     eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
 
@@ -229,18 +234,46 @@ def main():
                                weight_decay=args.weight_decay)
                                # t_total=num_train_optimization_steps)
 
+    pre_loss = 9999999
+    stop_flag = False
+    tolerance = args.early_stop_tolerance
+
     if args.do_train:
+        if n_gpu > 1:
+            model = torch.nn.DataParallel(model)
+
         nb_tr_steps, tr_loss, exp_average_loss = 0, 0, None
         model.train()
-        for _ in trange(int(args.num_train_epochs), desc="Epoch"):
+        for ep in trange(int(args.num_train_epochs), desc="Epoch"):
             tr_loss = 0
             nb_tr_steps = 0
             tqdm_bar = tqdm(train_dataloader, desc="Training")
             for step, batch in enumerate(tqdm_bar):
                 batch = tuple(t.to(device) for t in batch)
-                input_ids, lm_labels = batch
-                loss = model(input_ids, labels=lm_labels)
-                # loss = args.lm_coef * losses[0] + losses[1]
+                record_ids, lm_labels = batch
+
+                # sequence
+                seq_len = lm_labels.size(1)
+                summary_ids = None
+                tmp_loss = 0
+                for i in range(seq_len):
+                    inputs = {'record_ids': record_ids, 'summary_ids': summary_ids}
+
+                    outputs = model(**inputs, labels=lm_labels)
+                    next_token_logits = outputs[0][:, -1, :]
+                    next_token_label = lm_labels[:, i]
+                    loss_fct = CrossEntropyLoss(ignore_index=-1)
+                    if args.train_batch_size == 1:
+                        tmp_loss = tmp_loss + loss_fct(next_token_logits, next_token_label)
+                        next_token = lm_labels[:, i].unsqueeze(0)
+                    else:
+                        tmp_loss = tmp_loss + loss_fct(next_token_logits.squeeze(), next_token_label)
+                        next_token = lm_labels[:, i]
+                    summary_ids = next_token if i == 0 else torch.cat((summary_ids, next_token), dim=1)
+
+                loss = tmp_loss / seq_len
+                if n_gpu > 1:
+                    loss = loss.mean()
                 loss.backward()
                 optimizer.step()
                 optimizer.zero_grad()
@@ -249,8 +282,30 @@ def main():
                 nb_tr_steps += 1
                 tqdm_bar.desc = "Training loss: {:.4f} lr: {:.4f}".format(exp_average_loss, optimizer.defaults["lr"])
 
+            # early stopping
+            if tr_loss > pre_loss:
+                tolerance -= 1
+                stop_flag = True if tolerance == 0 else False
+            else:
+                tolerance = args.early_stop_tolerance
+            pre_loss = tr_loss
+            if args.early_stop and stop_flag:
+                logger.info("Training finished after not improving. Early Stop!")
+                break
+            # save model
+            if (ep+1) % 30 == 0:
+                model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
+
+                # If we save using the predefined names, we can load using `from_pretrained`
+                output_model_file = os.path.join(args.output_dir, WEIGHTS_NAME)
+                output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
+
+                torch.save(model_to_save.state_dict(), output_model_file + "-" + str(ep+1))
+                model_to_save.config.to_json_file(output_config_file)
+                tokenizer.save_vocabulary(args.output_dir)
+
     # Save a trained model
-    if args.do_train:
+    if args.do_save:
         # Save a trained model, configuration and tokenizer
         model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
 
@@ -262,12 +317,11 @@ def main():
         model_to_save.config.to_json_file(output_config_file)
         tokenizer.save_vocabulary(args.output_dir)
 
+    if args.do_eval:
         # Load a trained model and vocabulary that you have fine-tuned
         model = GPT2EntityEncoderLMModel.from_pretrained(args.output_dir)
         tokenizer = GPT2Tokenizer.from_pretrained(args.output_dir)
         model.to(device)
-
-    if args.do_eval:
         model.eval()
         eval_loss, eval_accuracy = 0, 0
         nb_eval_steps, nb_eval_examples = 0, 0
@@ -303,27 +357,37 @@ def main():
                 writer.write("%s = %s\n" % (key, str(result[key])))
 
     if args.do_generate:
-        # FIXME this is only for test
-        test_src, test_tgt = load_rotowire_dataset(args.dataset_path, "valid_temp")
-        test_src, test_tgt = tokenize_and_encode([test_src, test_tgt])
-        test_data = pre_process_datasets(device, test_src, test_tgt, tgt_length, pad_token)
+        # Load a trained model and vocabulary that you have fine-tuned
+        model = GPT2EntityEncoderLMModel.from_pretrained(args.output_dir)
+        tokenizer = GPT2Tokenizer.from_pretrained(args.output_dir)
+        model.to(device)
+        # test_data = encode_dataset(args, device, tokenizer, pad_token, _type="test")
+        test_data = encode_dataset(args, device, tokenizer, pad_token, _type="valid_temp")
         test_sampler = SequentialSampler(test_data)
         test_dataloader = DataLoader(test_data, sampler=test_sampler, batch_size=1)
         model.eval()
 
+        logger.info("***** Generate summary %s *****" % (args.output_dir+"pred.txt"))
         for batch in test_dataloader:
-            batch = tuple(t.to(device) for t in batch)
-            input_ids, lm_labels = batch
-            with torch.no_grad():
-                lm_logits, _ = model(input_ids)
+            with open(os.path.join(args.output_dir, "pred.txt"), "w") as f:
+                batch = tuple(t.to(device) for t in batch)
+                record_ids, lm_labels = batch
+                summary_ids = None
+                summary = []
+                with torch.no_grad():
+                    outputs = model(record_ids, summary_ids=summary_ids)
+                    next_token_logits = outputs[0][:, -1, :]
+                    next_token_id = torch.argmax(next_token_logits, dim=1)
+                    next_token = tokenizer.convert_ids_to_tokens(next_token_id)
+                    summary.append(next_token)
+                    if next_token == '<|endoftext|>':
+                        break
 
-            lm_logits = lm_logits.detach().cpu().numpy()
-            lm_labels = lm_labels.to('cpu').numpy()
-            outputs = np.argmax(lm_logits[0], axis=1)
+                f.write(tokenizer.decode(summary) + "\n")
 
-            print(tokenizer.decode(lm_labels[0][:300]))
+            print(tokenizer.decode(lm_labels[0]))
             print("---------------------------------------------------------------")
-            print(tokenizer.decode(outputs[:300]))
+            print(tokenizer.decode(summary))
             print("")
 
 
