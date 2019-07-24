@@ -43,8 +43,8 @@ python2 tools/data_utils.py -mode make_ie_data -input_path 'data/rotowire' -outp
 python2 tools/data_utils.py -mode prep_gen_data -gen_fi models/opt_cov_cont/pred.txt -dict_pfx data/rotowire/roto-ie -output_fi models/opt_cov_cont/pred.h5 -input_path data/rotowire -test
 
 # docker
-docker build -t hwijeen:0.3 .
-nvidia-docker run -ti -d -v /home/hwijeen/WNGT2019/data:/home/WNGT2019/data -v /home/hwijeen/WNGT2019/models/:/home/WNGT2019/models --name hwijeen hwijeen:0.3
+docker build -t hwijeen:1.0 .
+nvidia-docker run -ti -d -v /home/hwijeen/WNGT2019/data:/home/WNGT2019/data -v /home/hwijeen/WNGT2019/models/:/home/WNGT2019/models --name hwijeen hwijeen:1.0
 
 # perform evaluation
 th tools/extractor.lua -gpuid 1 -datafile data/rotowire/roto-ie.h5 -preddata models/opt_cov_cont/pred.h5 -dict_pfx data/rotowire/roto-ie -just_eval |tee models/opt_cov_cont/rg_result.txt # run on docker
@@ -52,8 +52,9 @@ python2 tools/non_rg_metrics.py data/rotowire/roto-gold-test.tuples.txt models/o
 perl tools/multi-bleu.perl data/rotowire/tgt_test.txt < models/opt_cov_cont/pred.txt |tee models/opt_cov_cont/bleu.txt
  ```
 `extractor.lua` measures Relation Generation(RG) score. Precision(`P%` in the original paper) and the number(`#`) corresponds to `nodup prec` and `nodup correct / 727`, respectiely(727 is the number of test samples).
-`non_rg_metrics.py` calculates Content Selection(CS) and Content Ordering(CO) scores. Precision(`P%`) corresponds to `prec` and recall(`R%`) `rec`. Content ordering measured in normalized Damerau-Levenshtein distance(`DLD%`) is `avg score`.
-  
-## Issues
-- share embeddings?
-- share decoder embedings?
+`non_rg_metrics.py` calculates Content Selection(CS) and Content Ordering(CO) scores. Precision(`P%`) corresponds to `prec` and recall(`R%`) `rec`. Content ordering measured in normalized Damerau-Levenshtein distance(`DLD%`) is `avg score`.  
+Alternatively,
+```
+./run_evaluation.sh experiment_name
+```
+This will show results in stdout and the results will also be saved as `rg_results.txt`, `cs_co_result.txt`, `bleu.txt` in `models/experiment_name/`.
