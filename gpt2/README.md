@@ -16,19 +16,21 @@ To train a model,
 python run_openai_gpt2.py 
     --model_name gpt2 \
     --do_train \
-    --do_eval \
     --dataset_path data/rotowire \
     --output_dir temp \
     --train_batch_size 4 \
-    --num_train_epochs 100
+    --eval_batch_size 4 \
+    --num_train_epochs 100 \
+    --early_stop
 ```
 
 ## Generation
-To generate summary, (under construction)
+To generate summary,
 ```bash
 python run_openai_gpt2.py 
     --model_name gpt2 \
     --do_generate \
     --dataset_path data/rotowire \
     --output_dir temp \
+    --generate_model_file pytorch_model.bin
 ```

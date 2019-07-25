@@ -56,6 +56,9 @@ logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(messa
 logger = logging.getLogger(__name__)
 
 
+DEC_MAX_LEN = 420  # TODO gpt2 model is limited 1024, need to reduce input record size
+
+
 def accuracy(out, labels):
     outputs = np.argmax(out, axis=1)
     return np.sum(outputs == labels)
@@ -72,7 +75,6 @@ def tokenize_and_encode(obj, tokenizer):
 
 def encode_dataset(args, device, tokenizer, pad_token, _type="train"):
     logger.info("Encoding dataset...")
-    # FIXME when you train
     src, tgt = load_rotowire_dataset(args.dataset_path, _type)
     if os.path.exists(os.path.join(args.dataset_path, _type + ".pt")):
         tensor_dataset = torch.load(os.path.join(args.dataset_path, _type + ".pt"))
@@ -123,7 +125,7 @@ def pre_process_datasets(device, src, tgt, pad_token):
                 assert len(entity[i]) == src_max_len
 
     # padding for tgt
-    tgt_max_len = max([len(summary) for summary in tgt])
+    tgt_max_len = min(max([len(summary) for summary in tgt]), DEC_MAX_LEN)
     # tgt_max_len = tgt_length
     for i, summary in enumerate(tgt):
         summary = summary + [pad_token]
@@ -137,6 +139,38 @@ def pre_process_datasets(device, src, tgt, pad_token):
     return TensorDataset(src, tgt)
 
 
+def validate(args, model, device, n_gpu, eval_dataloader):
+    model.eval()
+    tr_loss = 0
+    nb_tr_steps = 0
+    for step, batch in enumerate(eval_dataloader):
+        batch = tuple(t.to(device) for t in batch)
+        record_ids, lm_labels = batch
+
+        # sequence
+        seq_len = lm_labels.size(1)
+        summary_ids = None
+        for i in range(seq_len):
+            inputs = {'record_ids': record_ids, 'summary_ids': summary_ids}
+
+            outputs = model(**inputs, labels=lm_labels)
+            next_token_logits = outputs[0][:, -1, :]
+            next_token_label = lm_labels[:, i]
+            loss_fct = CrossEntropyLoss(ignore_index=-1)
+            if args.eval_batch_size == 1:
+                loss = loss_fct(next_token_logits, next_token_label)
+            else:
+                loss = loss_fct(next_token_logits.squeeze(), next_token_label)
+            next_token = lm_labels[:, i].unsqueeze(1)
+            summary_ids = next_token if i == 0 else torch.cat((summary_ids, next_token), dim=1)
+
+            if n_gpu > 1:
+                loss = loss.mean()
+            tr_loss += loss.item()
+            nb_tr_steps += 1
+    return tr_loss/nb_tr_steps
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_name', type=str, default='gpt2',
@@ -147,6 +181,7 @@ def main():
     parser.add_argument("--do_save", action='store_true')
     parser.add_argument("--output_dir", default=None, type=str, required=True,
                         help="The output directory where the model predictions and checkpoints will be written.")
+    parser.add_argument("--generate_model_file", default="pytorch_model.bin", type=str)
     parser.add_argument('--dataset_path', type=str, default='')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--num_train_epochs', type=int, default=3)
@@ -192,31 +227,28 @@ def main():
     # Load tokenizer and model
     # This loading functions also add new tokens and embeddings called `special tokens`
     # These new embeddings will be fine-tuned on the Rotowire dataset
-
     tokenizer = GPT2Tokenizer.from_pretrained(args.model_name)
     pad_token = tokenizer.convert_tokens_to_ids("<|endoftext|>")
-    # special_tokens_ids = list(tokenizer.convert_tokens_to_ids(token) for token in special_tokens)
-    model = GPT2EntityEncoderLMModel.from_pretrained(args.model_name)
-    model.to(device)
 
     # Load and encode the datasets
     if not args.dataset_path:
         raise FileNotFoundError("data path not found")
         # roc_stories = cached_path(ROCSTORIES_URL)
 
-    if args.do_train:
-        # FIXME when you train
-        # train_data = encode_dataset(args, device, tokenizer, pad_token, _type="train")
-        train_data = encode_dataset(args, device, tokenizer, pad_token, _type="valid_temp")
+    if args.do_train or args.do_eval:
+        # special_tokens_ids = list(tokenizer.convert_tokens_to_ids(token) for token in special_tokens)
+        model = GPT2EntityEncoderLMModel.from_pretrained(args.model_name)
+        model.to(device)
 
-    # eval_data = encode_dataset(args, device, tokenizer, pad_token, _type="valid")
-    eval_data = encode_dataset(args, device, tokenizer, pad_token, _type="valid_temp")
+        train_data = encode_dataset(args, device, tokenizer, pad_token, _type="train")
+        eval_data = encode_dataset(args, device, tokenizer, pad_token, _type="valid")
 
-    train_sampler = RandomSampler(train_data)
-    train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
+        train_sampler = RandomSampler(train_data)
+        train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
 
-    eval_sampler = SequentialSampler(eval_data)
-    eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
+        # eval_sampler = SequentialSampler(eval_data)
+        eval_sampler = RandomSampler(eval_data, replacement=True, num_samples=10)
+        eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
 
     # Prepare optimizer
     if args.do_train:
@@ -243,8 +275,8 @@ def main():
             model = torch.nn.DataParallel(model)
 
         nb_tr_steps, tr_loss, exp_average_loss = 0, 0, None
-        model.train()
         for ep in trange(int(args.num_train_epochs), desc="Epoch"):
+            model.train()
             tr_loss = 0
             nb_tr_steps = 0
             tqdm_bar = tqdm(train_dataloader, desc="Training")
@@ -253,9 +285,9 @@ def main():
                 record_ids, lm_labels = batch
 
                 # sequence
+                seq_loss = 0
                 seq_len = lm_labels.size(1)
                 summary_ids = None
-                tmp_loss = 0
                 for i in range(seq_len):
                     inputs = {'record_ids': record_ids, 'summary_ids': summary_ids}
 
@@ -264,36 +296,41 @@ def main():
                     next_token_label = lm_labels[:, i]
                     loss_fct = CrossEntropyLoss(ignore_index=-1)
                     if args.train_batch_size == 1:
-                        tmp_loss = tmp_loss + loss_fct(next_token_logits, next_token_label)
-                        next_token = lm_labels[:, i].unsqueeze(0)
+                        loss = loss_fct(next_token_logits, next_token_label)
                     else:
-                        tmp_loss = tmp_loss + loss_fct(next_token_logits.squeeze(), next_token_label)
-                        next_token = lm_labels[:, i]
+                        loss = loss_fct(next_token_logits.squeeze(), next_token_label)
+                    next_token = lm_labels[:, i].unsqueeze(1)
                     summary_ids = next_token if i == 0 else torch.cat((summary_ids, next_token), dim=1)
 
-                loss = tmp_loss / seq_len
-                if n_gpu > 1:
-                    loss = loss.mean()
-                loss.backward()
-                optimizer.step()
-                optimizer.zero_grad()
-                tr_loss += loss.item()
-                exp_average_loss = loss.item() if exp_average_loss is None else 0.7*exp_average_loss+0.3*loss.item()
-                nb_tr_steps += 1
-                tqdm_bar.desc = "Training loss: {:.4f} lr: {:.4f}".format(exp_average_loss, optimizer.defaults["lr"])
+                    if n_gpu > 1:
+                        loss = loss.mean()
+                    loss.backward(retain_graph=True)
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    tr_loss += loss.item()
+                    seq_loss += loss.item()
+                    nb_tr_steps += 1
+                seq_loss /= seq_len
+                exp_average_loss = seq_loss if exp_average_loss is None else 0.7*exp_average_loss+0.3*seq_loss
+                tqdm_bar.desc = "Training loss: {:.2e} lr: {:.4f}".format(exp_average_loss, optimizer.defaults["lr"])
+                # end of batch
+            # end of all batch
 
             # early stopping
-            if tr_loss > pre_loss:
-                tolerance -= 1
-                stop_flag = True if tolerance == 0 else False
-            else:
-                tolerance = args.early_stop_tolerance
-            pre_loss = tr_loss
+            if ep > 100 and (ep+1) % 4 == 0:
+                logger.info("Epoch %s Validating ..." % str(ep+1))
+                eval_loss = validate(args, model, device, n_gpu, eval_dataloader)
+                if eval_loss > pre_loss:
+                    tolerance -= 1
+                    stop_flag = True if tolerance == 0 else False
+                else:
+                    tolerance = args.early_stop_tolerance
+                pre_loss = eval_loss
             if args.early_stop and stop_flag:
                 logger.info("Training finished after not improving. Early Stop!")
                 break
             # save model
-            if (ep+1) % 30 == 0:
+            if args.do_save and (ep+1) % 30 == 0:
                 model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
 
                 # If we save using the predefined names, we can load using `from_pretrained`
@@ -303,6 +340,8 @@ def main():
                 torch.save(model_to_save.state_dict(), output_model_file + "-" + str(ep+1))
                 model_to_save.config.to_json_file(output_config_file)
                 tokenizer.save_vocabulary(args.output_dir)
+                logger.info("Save model %s" % output_model_file + "-" + str(ep+1))
+            # end of epoch
 
     # Save a trained model
     if args.do_save:
@@ -357,38 +396,40 @@ def main():
                 writer.write("%s = %s\n" % (key, str(result[key])))
 
     if args.do_generate:
-        # Load a trained model and vocabulary that you have fine-tuned
+        max_seq_len = DEC_MAX_LEN
         model = GPT2EntityEncoderLMModel.from_pretrained(args.output_dir)
-        tokenizer = GPT2Tokenizer.from_pretrained(args.output_dir)
+        state_dict = torch.load(os.path.join(args.output_dir, args.generate_model_file))
+        model.load_state_dict(state_dict)
         model.to(device)
+
         # test_data = encode_dataset(args, device, tokenizer, pad_token, _type="test")
         test_data = encode_dataset(args, device, tokenizer, pad_token, _type="valid_temp")
         test_sampler = SequentialSampler(test_data)
         test_dataloader = DataLoader(test_data, sampler=test_sampler, batch_size=1)
         model.eval()
 
-        logger.info("***** Generate summary %s *****" % (args.output_dir+"pred.txt"))
+        logger.info("***** Generate summary %s *****" % (args.output_dir+"/pred.txt"))
         for batch in test_dataloader:
             with open(os.path.join(args.output_dir, "pred.txt"), "w") as f:
                 batch = tuple(t.to(device) for t in batch)
                 record_ids, lm_labels = batch
                 summary_ids = None
-                summary = []
                 with torch.no_grad():
-                    outputs = model(record_ids, summary_ids=summary_ids)
-                    next_token_logits = outputs[0][:, -1, :]
-                    next_token_id = torch.argmax(next_token_logits, dim=1)
-                    next_token = tokenizer.convert_ids_to_tokens(next_token_id)
-                    summary.append(next_token)
-                    if next_token == '<|endoftext|>':
-                        break
+                    for i in range(max_seq_len):
+                        outputs = model(record_ids, summary_ids=summary_ids)
+                        next_token_logits = outputs[0][:, -1, :]
+                        next_token_id = torch.argmax(next_token_logits).view(-1, 1)
+                        summary_ids = next_token_id if i == 0 else torch.cat((summary_ids, next_token_id), dim=1)
+                        next_token = tokenizer.convert_ids_to_tokens(next_token_id[0].tolist())[0]
+                        if next_token == '<|endoftext|>' or next_token is None:
+                            break
+                f.write(tokenizer.decode(summary_ids[0].tolist()) + "\n")
 
-                f.write(tokenizer.decode(summary) + "\n")
-
-            print(tokenizer.decode(lm_labels[0]))
-            print("---------------------------------------------------------------")
-            print(tokenizer.decode(summary))
-            print("")
+            # test
+            # print(tokenizer.decode(lm_labels[0].tolist()))
+            # print("---------------------------------------------------------------")
+            # print(tokenizer.decode(summary_ids[0].tolist()))
+            # print("")
 
 
 if __name__ == '__main__':

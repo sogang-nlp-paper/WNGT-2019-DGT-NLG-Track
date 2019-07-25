@@ -582,10 +582,13 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         for layer, heads in heads_to_prune.items():
             self.h[layer].attn.prune_heads(heads)
 
-    def encode_records(self, input_ids):
-        # entity embedding (N, 602, 4, 12) => (N, 602, 768)
+    def _encode_records(self, input_ids):
+        """ encode each record
+            input:  inputs_ids = (N, n_rec, n_feat, max_feat_size)
+            output: inputs_embeds = (N, n_rec, n_embd)
+            ex) (N, 602, 4, 12) => (N, 602, 768)
+        """
         batch_size = input_ids.size(0)
-        # input_ids = input_ids.view(batch_size, n_record, -1)
         n_record = input_ids.size(1)
         n_features = input_ids.size(2)
         inputs_embeds = input_ids.new_zeros((batch_size, n_record, n_features, self.n_embd)).float()
@@ -595,7 +598,6 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
             entity_embeds = self.wte(entity_ids)  # (N, 602, 12, 768)
             inputs_embeds[:, :, i, :] = (entity_embeds * mask.unsqueeze(3)).sum(dim=2) / mask.sum(dim=2).unsqueeze(2)
 
-        # inputs_embeds = torch.matmul(inputs_embeds.transpose(2, 3), mask.unsqueeze(3))
         inputs_embeds = self.ent_enc(inputs_embeds.view(batch_size, n_record, -1))  # => (N, 602, 768)
         return inputs_embeds
 
@@ -623,7 +625,7 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         else:
             head_mask = [None] * self.config.n_layer
 
-        inputs_embeds = self.encode_records(record_ids)  # => (N, 602, 768)
+        inputs_embeds = self._encode_records(record_ids)  # => (N, 602, 768)
         if summary_ids is not None:
             summary_embeds = self.wte(summary_ids)
             inputs_embeds = torch.cat((inputs_embeds, summary_embeds), dim=1)
