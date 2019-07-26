@@ -41,22 +41,18 @@ from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
 
 from torch.nn import CrossEntropyLoss
 
-from pytorch_transformers import (OpenAIGPTDoubleHeadsModel, OpenAIGPTTokenizer,
-                                  GPT2Tokenizer, GPT2Config,
-                                  # GPT2LMHeadModel,
+from pytorch_transformers import (GPT2Tokenizer,
                                   AdamW, cached_path, WEIGHTS_NAME, CONFIG_NAME)
 
 from modeling_gpt2 import GPT2EntityEncoderLMModel
-
-# ROCSTORIES_URL = "https://s3.amazonaws.com/datasets.huggingface.co/ROCStories.tar.gz"
 
 logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt = '%m/%d/%Y %H:%M:%S',
                     level = logging.INFO)
 logger = logging.getLogger(__name__)
 
-
 DEC_MAX_LEN = 420  # TODO gpt2 model is limited 1024, need to reduce input record size
+n_record = 602
 
 
 def accuracy(out, labels):
@@ -128,7 +124,7 @@ def pre_process_datasets(device, src, tgt, pad_token):
     tgt_max_len = min(max([len(summary) for summary in tgt]), DEC_MAX_LEN)
     # tgt_max_len = tgt_length
     for i, summary in enumerate(tgt):
-        summary = summary + [pad_token]
+        summary = [pad_token] + summary + [pad_token]
         pad_size = tgt_max_len - len(summary)
         tgt[i] = summary + ([pad_token] * pad_size) if pad_size > 0 else summary[:tgt_max_len]
         assert len(tgt[i]) == tgt_max_len
@@ -153,7 +149,7 @@ def validate(args, model, device, n_gpu, eval_dataloader):
         for i in range(seq_len):
             inputs = {'record_ids': record_ids, 'summary_ids': summary_ids}
 
-            outputs = model(**inputs, labels=lm_labels)
+            outputs = model(**inputs)
             next_token_logits = outputs[0][:, -1, :]
             next_token_label = lm_labels[:, i]
             loss_fct = CrossEntropyLoss(ignore_index=-1)
@@ -168,7 +164,9 @@ def validate(args, model, device, n_gpu, eval_dataloader):
                 loss = loss.mean()
             tr_loss += loss.item()
             nb_tr_steps += 1
-    return tr_loss/nb_tr_steps
+    dev_loss = tr_loss / nb_tr_steps
+    logger.info("loss (dev set): {:.2e}" % dev_loss)
+    return dev_loss
 
 
 def main():
@@ -284,40 +282,28 @@ def main():
                 batch = tuple(t.to(device) for t in batch)
                 record_ids, lm_labels = batch
 
-                # sequence
-                seq_loss = 0
-                seq_len = lm_labels.size(1)
-                summary_ids = None
-                for i in range(seq_len):
-                    inputs = {'record_ids': record_ids, 'summary_ids': summary_ids}
+                inputs = {'record_ids': record_ids, 'labels': lm_labels}
+                outputs = model(**inputs)
+                lm_logits = outputs[0][:, n_record:-1, :].contiguous()
+                labels = lm_labels[:, 1:].contiguous()
+                loss_fct = CrossEntropyLoss(ignore_index=-1)
+                loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)),
+                                labels.view(-1))
 
-                    outputs = model(**inputs, labels=lm_labels)
-                    next_token_logits = outputs[0][:, -1, :]
-                    next_token_label = lm_labels[:, i]
-                    loss_fct = CrossEntropyLoss(ignore_index=-1)
-                    if args.train_batch_size == 1:
-                        loss = loss_fct(next_token_logits, next_token_label)
-                    else:
-                        loss = loss_fct(next_token_logits.squeeze(), next_token_label)
-                    next_token = lm_labels[:, i].unsqueeze(1)
-                    summary_ids = next_token if i == 0 else torch.cat((summary_ids, next_token), dim=1)
-
-                    if n_gpu > 1:
-                        loss = loss.mean()
-                    loss.backward(retain_graph=True)
-                    optimizer.step()
-                    optimizer.zero_grad()
-                    tr_loss += loss.item()
-                    seq_loss += loss.item()
-                    nb_tr_steps += 1
-                seq_loss /= seq_len
-                exp_average_loss = seq_loss if exp_average_loss is None else 0.7*exp_average_loss+0.3*seq_loss
+                if n_gpu > 1:
+                    loss = loss.mean()
+                loss.backward(retain_graph=True)
+                optimizer.step()
+                optimizer.zero_grad()
+                tr_loss += loss.item()
+                nb_tr_steps += 1
+                exp_average_loss = loss.item() if exp_average_loss is None else 0.7*exp_average_loss+0.3*loss.item()
                 tqdm_bar.desc = "Training loss: {:.2e} lr: {:.4f}".format(exp_average_loss, optimizer.defaults["lr"])
                 # end of batch
             # end of all batch
 
             # early stopping
-            if ep > 100 and (ep+1) % 4 == 0:
+            if args.early_stop and ep > 10 and (ep+1) % 4 == 0:
                 logger.info("Epoch %s Validating ..." % str(ep+1))
                 eval_loss = validate(args, model, device, n_gpu, eval_dataloader)
                 if eval_loss > pre_loss:
@@ -330,7 +316,7 @@ def main():
                 logger.info("Training finished after not improving. Early Stop!")
                 break
             # save model
-            if args.do_save and (ep+1) % 30 == 0:
+            if args.do_save and (ep+1) % 10 == 0:
                 model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
 
                 # If we save using the predefined names, we can load using `from_pretrained`
@@ -423,7 +409,9 @@ def main():
                         next_token = tokenizer.convert_ids_to_tokens(next_token_id[0].tolist())[0]
                         if next_token == '<|endoftext|>' or next_token is None:
                             break
-                f.write(tokenizer.decode(summary_ids[0].tolist()) + "\n")
+                summary = tokenizer.decode(summary_ids[0].tolist())
+                print(summary)
+                f.write(summary + "\n")
 
             # test
             # print(tokenizer.decode(lm_labels[0].tolist()))

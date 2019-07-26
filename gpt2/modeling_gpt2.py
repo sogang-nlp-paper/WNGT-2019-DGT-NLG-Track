@@ -626,6 +626,11 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
             head_mask = [None] * self.config.n_layer
 
         inputs_embeds = self._encode_records(record_ids)  # => (N, 602, 768)
+
+        if labels is not None:
+            summary_embeds = self.wte(labels)
+            inputs_embeds = torch.cat((inputs_embeds, summary_embeds), dim=1)
+
         if summary_ids is not None:
             summary_embeds = self.wte(summary_ids)
             inputs_embeds = torch.cat((inputs_embeds, summary_embeds), dim=1)
