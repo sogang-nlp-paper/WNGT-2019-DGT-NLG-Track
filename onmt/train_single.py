@@ -25,12 +25,15 @@ def _check_save_model_path(opt):
 def _tally_parameters(model):
     enc = 0
     dec = 0
+    review = 0
     for name, param in model.named_parameters():
         if 'encoder' in name:
             enc += param.nelement()
-        else:
+        elif 'decoder' in name:
             dec += param.nelement()
-    return enc + dec, enc, dec
+        else:
+            review += param.nelement()
+    return enc + dec, enc, dec, review
 
 
 def configure_process(opt, device_id):
@@ -82,9 +85,11 @@ def main(opt, device_id, batch_queue=None, semaphore=None):
 
     # Build model.
     model = build_model(model_opt, opt, fields, checkpoint)
-    n_params, enc, dec = _tally_parameters(model)
+    n_params, enc, dec, review = _tally_parameters(model)
     logger.info('encoder: %d' % enc)
     logger.info('decoder: %d' % dec)
+    if model_opt.review_net:
+        logger.info('reviewer: %d' % review)
     logger.info('* number of parameters: %d' % n_params)
     _check_save_model_path(opt)
 

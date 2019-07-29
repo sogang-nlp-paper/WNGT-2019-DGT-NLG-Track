@@ -14,6 +14,8 @@ class ReviewerBase(nn.Module):
         self.hidden_size = hidden_size
         self.dropout = nn.Dropout(dropout)
 
+        self.state = {}
+
         # TODO: might not be necessary
         if review_type == 'output':
             self.linear = nn.Linear(hidden_size, hidden_size)
@@ -32,15 +34,15 @@ class ReviewerBase(nn.Module):
     @classmethod
     def from_opt(cls, opt):
         return cls(
-            opt.review_step,
+            opt.review_steps,
             opt.review_type,
             opt.rnn_type,
             opt.review_layers,
-            opt.review_rnn_size,
-            opt.global_attention,
-            opt.global_attention_function,
+            opt.rnn_size,
             opt.dropout[0] if type(opt.dropout) is list
-            else opt.dropout)
+            else opt.dropout,
+            opt.global_attention,
+            opt.global_attention_function)
 
     def _build_rnn(self, rnn_type, **kwargs):
         rnn, _ = rnn_factory(rnn_type, **kwargs)
@@ -85,7 +87,7 @@ class ReviewerBase(nn.Module):
         #       since stack(Variable) was allowed.
         #       In 0.4, SRU returns a tensor that shouldn't be stacke
         if type(review_outs) == list:
-            review_outs = torch.stack(review_outs)
+            review_outs = torch.stack(review_outs).squeeze(1)
 
             for k in attns:
                 if type(attns[k]) == list:
@@ -103,12 +105,12 @@ class InputReviewer(ReviewerBase):
         review_state = self.state["hidden"]
         for review_t in range(self.review_step):
             attn_out, p_attn = self.attn(
-                review_state,
+                review_state[0][-1],
                 memory_bank.transpose(0, 1),
                 memory_lengths=memory_lengths)
             attns["std"].append(p_attn)
 
-            review_input = attn_out
+            review_input = attn_out.unsqueeze(0)
             review_output, review_state = self.rnn(review_input, review_state)
 
             review_outs += [self.dropout(review_output)]
@@ -142,6 +144,7 @@ class OutputReviewer(ReviewerBase):
         review_outs = review_output + self.linear(review_outs)
         return review_state, review_outs, attns
 
+    # FIXME: this seems to raise CUDNN BAD PARAM error
     @property
     def _input_size(self):
         return 0

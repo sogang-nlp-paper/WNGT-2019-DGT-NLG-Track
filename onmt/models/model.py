@@ -54,10 +54,14 @@ class NMTModel(nn.Module):
 
 class ReviewNetwork(nn.Module):
     def __init__(self, encoder, reviewer, decoder):
+        super(ReviewNetwork, self).__init__()
         self.encoder = encoder
         self.reviewer = reviewer
         self.decoder = decoder
-        self.linear = nn.Linear()
+        # FIXME: only works with MeanEncoder
+        self.linear = nn.Linear(self.reviewer.hidden_size +\
+                                self.encoder.embeddings.word_vec_size,
+                                self.decoder.hidden_size)
 
     def forward(self, src, tgt, lengths, bptt=False):
         """Forward propagate a `src` and `tgt` pair for training.
@@ -89,7 +93,7 @@ class ReviewNetwork(nn.Module):
         if bptt is False:
             enc_review_state = tuple(self.linear(torch.cat([h, c], 2))
                                      for h, c in zip(
-                                     self.reviewer.state["hidden"], [enc_state]*2))
+                                     self.reviewer.state["hidden"], enc_state))
             self.decoder.init_state(src, memory_bank, enc_review_state)
         dec_out, attns = self.decoder(tgt, review_outs,
                                       memory_lengths=lengths)

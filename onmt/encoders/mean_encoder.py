@@ -77,7 +77,7 @@ class EntityMeanEncoder(EncoderBase):
         mean_pool = map(t_mean, emb_by_entity)
         entity_mean = torch.cat(tuple(mean_pool), dim=1) # (64, 16800)
         entity_mean = self.linear(entity_mean) # (64, 600)
-        entity_mean = entity_mean.expand(self.num_layers, batch, emb_dim)
+        entity_mean = entity_mean.expand(self.num_layers, batch, emb_dim).contiguous()
 
         memory_bank = emb
         encoder_final = (entity_mean, entity_mean)

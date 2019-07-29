@@ -7,7 +7,7 @@ multi-bleu.perl
 *.sublime-*
 .DS_Store
 data/
-models/
+/models/
 *.out
 *.t7
 *.tgz
@@ -16,6 +16,7 @@ models/
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyc
 
 # C extensions
 *.so
