@@ -191,6 +191,13 @@ def model_opts(parser):
               help="For FP16 training, the opt_level to use."
                    "See https://nvidia.github.io/apex/amp.html#opt-levels.")
 
+    group = parser.add_argument_group('Model- Reviewer')
+    group.add('--review_steps', '-review_steps', type=int, default=8,
+              help="Number of layers in the decoder")
+    group.add('--review_type', '-review_type', type=str, default='output',
+              help="Review type output or input")
+    group.add('--review_layers', '-review_layers', type=int, default=2,
+              help="Number of layers in the decoder")
 
 def preprocess_opts(parser):
     """ Pre-procesing options """
