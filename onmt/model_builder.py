@@ -3,6 +3,7 @@ This file is for models creation, which consults options
 and creates each encoder and decoder accordingly.
 """
 import re
+
 import torch
 import torch.nn as nn
 from torch.nn.init import xavier_uniform_
@@ -10,8 +11,9 @@ from torch.nn.init import xavier_uniform_
 import onmt.inputters as inputters
 import onmt.modules
 from onmt.encoders import str2enc
-
 from onmt.decoders import str2dec
+from onmt.reviewers import str2review
+
 
 from onmt.modules import Embeddings, VecEmbedding, CopyGenerator
 from onmt.modules.util_class import Cast
@@ -74,6 +76,11 @@ def build_encoder(opt, embeddings):
     enc_type = opt.encoder_type if opt.model_type == "text" \
         or opt.model_type == "vec" else opt.model_type
     return str2enc[enc_type].from_opt(opt, embeddings)
+
+
+def build_reviewer(opt):
+    assert opt.review_type in {'input', 'output'}, 'review_type must be `input` or `output'
+    return str2review[opt.review_type].from_opt(opt)
 
 
 def build_decoder(opt, embeddings):
@@ -143,6 +150,8 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
     encoder = build_encoder(model_opt, src_emb)
 
     # Build review net
+    if model_opt.review_net:
+       reviewer = build_reviewer(model_opt)
 
     # Build decoder.
     tgt_field = fields["tgt"]
@@ -165,7 +174,11 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
         device = torch.device("cuda")
     elif not gpu:
         device = torch.device("cpu")
-    model = onmt.models.NMTModel(encoder, decoder)
+
+    if model_opt.review_net:
+        model = onmt.models.ReviewNetwork(encoder, reviewer, decoder)
+    else:
+        model = onmt.models.NMTModel(encoder, decoder)
 
     # Build Generator.
     if not model_opt.copy_attn:

@@ -192,6 +192,8 @@ def model_opts(parser):
                    "See https://nvidia.github.io/apex/amp.html#opt-levels.")
 
     group = parser.add_argument_group('Model- Reviewer')
+    group.add('--review_net', '-review_net', action="store_true",
+              help="Train a model with review network")
     group.add('--review_steps', '-review_steps', type=int, default=8,
               help="Number of layers in the decoder")
     group.add('--review_type', '-review_type', type=str, default='output',
