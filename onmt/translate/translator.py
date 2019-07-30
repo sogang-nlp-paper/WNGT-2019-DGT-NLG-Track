@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 """ Translator Class and builder """
 from __future__ import print_function
+
 import codecs
 import os
 import math
@@ -17,6 +18,7 @@ from onmt.translate.beam_search import BeamSearch
 from onmt.translate.random_sampling import RandomSampling
 from onmt.utils.misc import tile, set_random_seed
 from onmt.modules.copy_generator import collapse_copy_scores
+from onmt.models import ReviewNetwork
 
 
 def build_translator(opt, report_score=True, logger=None, out_file=None):
@@ -613,7 +615,16 @@ class Translator(object):
 
         # (1) Run the encoder on the src.
         src, enc_states, memory_bank, src_lengths = self._run_encoder(batch)
-        self.model.decoder.init_state(src, memory_bank, enc_states)
+        if isinstance(self.model, ReviewNetwork):
+            self.model.reviewer.init_state(enc_states)
+            review_outs, attn = self.model.reviewer(memory_bank, memory_lengths=src_lengths)
+            enc_review_state = tuple(self.model.linear(torch.cat([h, c], 2))
+                                     for h, c in zip(
+                self.model.reviewer.state["hidden"], enc_states))
+            self.model.decoder.init_state(src, memory_bank, enc_review_state)
+            memory_bank = review_outs # so that decoder attends on reviews
+        else: # NMTModel
+            self.model.decoder.init_state(src, memory_bank, enc_states)
 
         results = {
             "predictions": None,
