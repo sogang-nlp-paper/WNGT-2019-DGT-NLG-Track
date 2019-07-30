@@ -96,5 +96,5 @@ class ReviewNetwork(nn.Module):
                                      self.reviewer.state["hidden"], enc_state))
             self.decoder.init_state(src, memory_bank, enc_review_state)
         dec_out, attns = self.decoder(tgt, review_outs,
-                                      memory_lengths=lengths)
+                                      memory_lengths=None)
         return dec_out, attns
