@@ -124,6 +124,7 @@ def pre_process_datasets(device, src, tgt, pad_token):
     tgt_max_len = min(max([len(summary) for summary in tgt]), DEC_MAX_LEN)
     # tgt_max_len = tgt_length
     for i, summary in enumerate(tgt):
+        # FIXME remove pad_token in head
         summary = [pad_token] + summary + [pad_token]
         pad_size = tgt_max_len - len(summary)
         tgt[i] = summary + ([pad_token] * pad_size) if pad_size > 0 else summary[:tgt_max_len]
@@ -388,15 +389,14 @@ def main():
         model.load_state_dict(state_dict)
         model.to(device)
 
-        # test_data = encode_dataset(args, device, tokenizer, pad_token, _type="test")
-        test_data = encode_dataset(args, device, tokenizer, pad_token, _type="valid_temp")
+        test_data = encode_dataset(args, device, tokenizer, pad_token, _type="test")
         test_sampler = SequentialSampler(test_data)
         test_dataloader = DataLoader(test_data, sampler=test_sampler, batch_size=1)
         model.eval()
 
         logger.info("***** Generate summary %s *****" % (args.output_dir+"/pred.txt"))
-        for batch in test_dataloader:
-            with open(os.path.join(args.output_dir, "pred.txt"), "w") as f:
+        with open(os.path.join(args.output_dir, "pred.txt"), "w") as f:
+            for batch in test_dataloader:
                 batch = tuple(t.to(device) for t in batch)
                 record_ids, lm_labels = batch
                 summary_ids = None
@@ -409,9 +409,9 @@ def main():
                         next_token = tokenizer.convert_ids_to_tokens(next_token_id[0].tolist())[0]
                         if next_token == '<|endoftext|>' or next_token is None:
                             break
-                summary = tokenizer.decode(summary_ids[0].tolist())
-                print(summary)
-                f.write(summary + "\n")
+                summary = tokenizer.decode(summary_ids[0].tolist(), '<|endoftext|>')
+                print(summary.encode('utf-8').decode('utf-8'))
+                f.write(summary.encode('utf-8').decode('utf-8') + "\n")
 
             # test
             # print(tokenizer.decode(lm_labels[0].tolist()))
