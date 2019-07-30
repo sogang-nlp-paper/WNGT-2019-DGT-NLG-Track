@@ -10,7 +10,6 @@ data/
 *.out
 *.t7
 *.tgz
-run_experiment.sh
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
