@@ -136,7 +136,7 @@ def pre_process_datasets(device, src, tgt, pad_token):
     return TensorDataset(src, tgt)
 
 
-def validate(args, model, device, n_gpu, eval_dataloader):
+def validate(model, device, n_gpu, eval_dataloader):
     model.eval()
     tr_loss = 0
     nb_tr_steps = 0
@@ -144,29 +144,19 @@ def validate(args, model, device, n_gpu, eval_dataloader):
         batch = tuple(t.to(device) for t in batch)
         record_ids, lm_labels = batch
 
-        # sequence
-        seq_len = lm_labels.size(1)
-        summary_ids = None
-        for i in range(seq_len):
-            inputs = {'record_ids': record_ids, 'summary_ids': summary_ids}
-
-            outputs = model(**inputs)
-            next_token_logits = outputs[0][:, -1, :]
-            next_token_label = lm_labels[:, i]
-            loss_fct = CrossEntropyLoss(ignore_index=-1)
-            if args.eval_batch_size == 1:
-                loss = loss_fct(next_token_logits, next_token_label)
-            else:
-                loss = loss_fct(next_token_logits.squeeze(), next_token_label)
-            next_token = lm_labels[:, i].unsqueeze(1)
-            summary_ids = next_token if i == 0 else torch.cat((summary_ids, next_token), dim=1)
-
-            if n_gpu > 1:
-                loss = loss.mean()
-            tr_loss += loss.item()
-            nb_tr_steps += 1
+        inputs = {'record_ids': record_ids, 'labels': lm_labels}
+        outputs = model(**inputs)
+        lm_logits = outputs[0][:, n_record:-1, :].contiguous()
+        labels = lm_labels[:, 1:].contiguous()
+        loss_fct = CrossEntropyLoss(ignore_index=-1)
+        loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)),
+                        labels.view(-1))
+        if n_gpu > 1:
+            loss = loss.mean()
+        tr_loss += loss.item()
+        nb_tr_steps += 1
     dev_loss = tr_loss / nb_tr_steps
-    logger.info("loss (dev set): {:.2e}" % dev_loss)
+    logger.info("loss (dev set): {:.2e}".format(dev_loss))
     return dev_loss
 
 
@@ -246,7 +236,7 @@ def main():
         train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
 
         # eval_sampler = SequentialSampler(eval_data)
-        eval_sampler = RandomSampler(eval_data, replacement=True, num_samples=10)
+        eval_sampler = RandomSampler(eval_data, replacement=True, num_samples=30)
         eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
 
     # Prepare optimizer
@@ -304,9 +294,9 @@ def main():
             # end of all batch
 
             # early stopping
-            if args.early_stop and ep > 10 and (ep+1) % 4 == 0:
+            if args.early_stop and ep > 30 and (ep+1) % 4 == 0:
                 logger.info("Epoch %s Validating ..." % str(ep+1))
-                eval_loss = validate(args, model, device, n_gpu, eval_dataloader)
+                eval_loss = validate(model, device, n_gpu, eval_dataloader)
                 if eval_loss > pre_loss:
                     tolerance -= 1
                     stop_flag = True if tolerance == 0 else False
