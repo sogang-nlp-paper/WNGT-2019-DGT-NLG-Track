@@ -13,7 +13,7 @@ original rotowire dataset url: [original json format dataset](https://github.com
 ## Training
 To train a model,
 ```bash
-python run_openai_gpt2.py 
+python run_openai_gpt2.py \
     --model_name gpt2 \
     --do_train \
     --dataset_path data/rotowire \
@@ -27,7 +27,7 @@ python run_openai_gpt2.py
 ## Generation
 To generate summary,
 ```bash
-python run_openai_gpt2.py 
+python run_openai_gpt2.py \
     --model_name gpt2 \
     --do_generate \
     --dataset_path data/rotowire \
