@@ -69,22 +69,23 @@ def tokenize_and_encode(obj, tokenizer):
     return list(tokenize_and_encode(o, tokenizer) for o in obj)
 
 
-def encode_dataset(args, device, tokenizer, pad_token, _type="train"):
+def encode_dataset(args, device, tokenizer, pad_token, _type="train", _index=False):
     logger.info("Encoding dataset...")
-    src, tgt = load_rotowire_dataset(args.dataset_path, _type)
-    if os.path.exists(os.path.join(args.dataset_path, _type + ".pt")):
+    src, tgt = load_rotowire_dataset(args.dataset_path, _type, index=_index)
+    if os.path.exists(os.path.join(args.dataset_path, _type + ".pt")) and _index is False:
         tensor_dataset = torch.load(os.path.join(args.dataset_path, _type + ".pt"))
         logger.info("load %s" % os.path.join(args.dataset_path, _type + ".pt"))
     else:
         datasets = (src, tgt)
         src, tgt = tokenize_and_encode(datasets, tokenizer)
         tensor_dataset = pre_process_datasets(device, src, tgt, pad_token)
-        torch.save(tensor_dataset, os.path.join(args.dataset_path, _type + ".pt"))
-        logger.info("save %s" % os.path.join(args.dataset_path, _type + ".pt"))
+        if _index is False:  # save only whole dataset
+            torch.save(tensor_dataset, os.path.join(args.dataset_path, _type + ".pt"))
+            logger.info("save %s" % os.path.join(args.dataset_path, _type + ".pt"))
     return tensor_dataset
 
 
-def load_rotowire_dataset(dataset_path, _type="train"):
+def load_rotowire_dataset(dataset_path, _type="train", index=False):
     src_path = os.path.join(dataset_path, 'src_'+_type+'.txt')
     tgt_path = os.path.join(dataset_path, 'tgt_'+_type+'.txt')
 
@@ -96,6 +97,9 @@ def load_rotowire_dataset(dataset_path, _type="train"):
     with open(tgt_path, encoding='utf_8') as f:
         tgt_data = [line for line in f.readlines()]
     assert len(src_data) == len(tgt_data)
+    if index:
+        assert type(index) == int
+        return src_data[index:index+1], tgt_data[index:index+1]
     return src_data, tgt_data
 
 
@@ -236,7 +240,7 @@ def main():
         train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
 
         # eval_sampler = SequentialSampler(eval_data)
-        eval_sampler = RandomSampler(eval_data, replacement=True, num_samples=30)
+        eval_sampler = RandomSampler(eval_data, replacement=True, num_samples=100)
         eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
 
     # Prepare optimizer
@@ -379,6 +383,7 @@ def main():
         model.load_state_dict(state_dict)
         model.to(device)
 
+        # test_data = encode_dataset(args, device, tokenizer, pad_token, _type="test", _index=53)
         test_data = encode_dataset(args, device, tokenizer, pad_token, _type="test")
         test_sampler = SequentialSampler(test_data)
         test_dataloader = DataLoader(test_data, sampler=test_sampler, batch_size=1)
