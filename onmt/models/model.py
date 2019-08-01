@@ -95,6 +95,9 @@ class ReviewNetwork(nn.Module):
                                      for h, c in zip(
                                      self.reviewer.state["hidden"], enc_state))
             self.decoder.init_state(src, memory_bank, enc_review_state)
-        dec_out, attns = self.decoder(tgt, review_outs,
-                                      memory_lengths=None)
+
+        if self.decoder.copy_attn: # review and copy
+            memory_bank = (review_outs, memory_bank)
+
+        dec_out, attns = self.decoder(tgt, memory_bank, memory_lengths=lengths)
         return dec_out, attns

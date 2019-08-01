@@ -437,3 +437,79 @@ class InputFeedRNNDecoder(RNNDecoderBase):
         self.dropout.p = dropout
         self.rnn.dropout.p = dropout
         self.embeddings.update_dropout(dropout)
+
+
+class ReviewCopyRNNDecoder(InputFeedRNNDecoder):
+
+    def _run_forward_pass(self, tgt, memory_bank=None, memory_lengths=None):
+        """
+        See StdRNNDecoder._run_forward_pass() for description
+        of arguments and return values.
+        """
+        # Additional args check.
+        input_feed = self.state["input_feed"].squeeze(0)
+        input_feed_batch, _ = input_feed.size()
+        _, tgt_batch, _ = tgt.size()
+        aeq(tgt_batch, input_feed_batch)
+        # END Additional args check.
+
+        dec_outs = []
+        attns = {}
+        if self.attn is not None:
+            attns["std"] = []
+        if self.copy_attn is not None or self._reuse_copy_attn:
+            attns["copy"] = []
+        if self._coverage:
+            attns["coverage"] = []
+
+        emb = self.embeddings(tgt)
+        assert emb.dim() == 3  # len x batch x embedding_dim
+
+        dec_state = self.state["hidden"]
+        coverage = self.state["coverage"].squeeze(0) \
+            if self.state["coverage"] is not None else None
+
+        assert isinstance(memory_bank, tuple) # review net + copy attn
+        review_bank, memory_bank = memory_bank
+
+        # Input feed concatenates hidden state with
+        # input at every time step.
+        for emb_t in emb.split(1):
+            decoder_input = torch.cat([emb_t.squeeze(0), input_feed], 1)
+            rnn_output, dec_state = self.rnn(decoder_input, dec_state)
+            if self.attentional:
+                decoder_output, p_attn = self.attn(
+                    rnn_output,
+                    review_bank.transpose(0, 1),
+                    memory_lengths=None) # no padding in review_bank
+                attns["std"].append(p_attn)
+            else:
+                decoder_output = rnn_output
+            if self.context_gate is not None:
+                # TODO: context gate should be employed
+                # instead of second RNN transform.
+                decoder_output = self.context_gate(
+                    decoder_input, rnn_output, decoder_output
+                )
+            decoder_output = self.dropout(decoder_output)
+            input_feed = decoder_output
+
+            dec_outs += [decoder_output]
+
+            # Update the coverage attention.
+            if self._coverage:
+                coverage = p_attn if coverage is None else p_attn + coverage
+                attns["coverage"] += [coverage]
+
+            if self.copy_attn is not None:
+                # TODO: decoder_output or rnn_output?
+                # why no lengths?
+                _, copy_attn = self.copy_attn(
+                    decoder_output, memory_bank.transpose(0, 1),
+                    memory_lengths=memory_lengths)
+                attns["copy"] += [copy_attn]
+            elif self._reuse_copy_attn:
+                #attns["copy"] = attns["std"]
+                raise ValueError("cannot reuse copy attn in review network")
+
+        return dec_state, dec_outs, attns
