@@ -284,7 +284,7 @@ class Attention(nn.Module):
     def forward(self, x, layer_past=None, head_mask=None):
         x = self.c_attn(x)
         query, key, value = x.split(self.split_size, dim=2)
-        query = self.split_heads(query)
+        query = self.split_heads(query)  # (N, seq_len, 768) split => (N, 12, seq_len, 64)
         key = self.split_heads(key, k=True)
         value = self.split_heads(value)
         if layer_past is not None:
@@ -565,7 +565,9 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         self.h = nn.ModuleList([Block(config.n_ctx, config, scale=True) for _ in range(config.n_layer)])
         self.ln_f = LayerNorm(config.n_embd, eps=config.layer_norm_epsilon)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        self.ent_enc = nn.Linear(config.n_embd * 4, config.n_embd)
+        self.ent_enc = Conv1D(1, 48)
+        self.sigmoid = nn.Sigmoid()
+        self.rec_enc = Conv1D(config.n_embd, 602 * config.n_embd)
 
         self.n_embd = config.n_embd
 
@@ -591,15 +593,25 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         batch_size = input_ids.size(0)
         n_record = input_ids.size(1)
         n_features = input_ids.size(2)
-        inputs_embeds = input_ids.new_zeros((batch_size, n_record, n_features, self.n_embd)).float()
-        for i in range(n_features):
-            entity_ids = input_ids[:, :, i]  # entity_ids = (N, 602, 12)
-            mask = (entity_ids > 0).float()
-            entity_embeds = self.wte(entity_ids)  # (N, 602, 12, 768)
-            inputs_embeds[:, :, i, :] = (entity_embeds * mask.unsqueeze(3)).sum(dim=2) / mask.sum(dim=2).unsqueeze(2)
 
-        inputs_embeds = self.ent_enc(inputs_embeds.view(batch_size, n_record, -1))  # => (N, 602, 768)
-        return inputs_embeds
+        input_ids = input_ids.view(batch_size, n_record, -1)  # (N, 602, 48)
+        mask = (input_ids > 0).float()
+        inputs_embeds = self.wte(input_ids)  # (N, 602, 48, 768)
+        inputs_embeds = inputs_embeds * mask.unsqueeze(3)
+        inputs_embeds = self.ent_enc(inputs_embeds.transpose(2, 3).contiguous())  # (N, 602, 768, 1)
+        record_embeds = self.rec_enc(inputs_embeds.view(batch_size, -1))
+        return record_embeds.unsqueeze(1)
+
+        # inputs_embeds = input_ids.new_zeros((batch_size, n_record, n_features, self.n_embd)).float()
+        # for i in range(n_features):
+        #     entity_ids = input_ids[:, :, i]  # entity_ids = (N, 602, 12)
+        #     mask = (entity_ids > 0).float()
+        #     entity_embeds = self.wte(entity_ids)  # (N, 602, 12, 768)
+        #     inputs_embeds[:, :, i, :] = (entity_embeds * mask.unsqueeze(3)).sum(dim=2) / mask.sum(dim=2).unsqueeze(2)
+        #
+        # inputs_embeds = self.ent_enc(inputs_embeds.view(batch_size, n_record, -1))  # => (N, 602, 768)
+        # record_embeds = self.rec_enc(inputs_embeds).view(batch_size, 1, -1)
+        # return record_embeds
 
     def forward(self, record_ids, summary_ids=None, position_ids=None, token_type_ids=None, labels=None, past=None, head_mask=None):
         if past is None:
@@ -625,7 +637,7 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         else:
             head_mask = [None] * self.config.n_layer
 
-        inputs_embeds = self._encode_records(record_ids)  # => (N, 602, 768)
+        inputs_embeds = self._encode_records(record_ids)  # => (N, 1, 768)
 
         if labels is not None:
             summary_embeds = self.wte(labels)

@@ -51,7 +51,7 @@ logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(messa
                     level = logging.INFO)
 logger = logging.getLogger(__name__)
 
-DEC_MAX_LEN = 420  # TODO gpt2 model is limited 1024, need to reduce input record size
+DEC_MAX_LEN = 800  # TODO gpt2 model is limited 1024, need to reduce input record size
 n_record = 602
 
 
@@ -129,7 +129,7 @@ def pre_process_datasets(device, src, tgt, pad_token):
     # tgt_max_len = tgt_length
     for i, summary in enumerate(tgt):
         # FIXME remove pad_token in head
-        summary = [pad_token] + summary + [pad_token]
+        summary = summary + [pad_token]
         pad_size = tgt_max_len - len(summary)
         tgt[i] = summary + ([pad_token] * pad_size) if pad_size > 0 else summary[:tgt_max_len]
         assert len(tgt[i]) == tgt_max_len
@@ -150,8 +150,8 @@ def validate(model, device, n_gpu, eval_dataloader):
 
         inputs = {'record_ids': record_ids, 'labels': lm_labels}
         outputs = model(**inputs)
-        lm_logits = outputs[0][:, n_record:-1, :].contiguous()
-        labels = lm_labels[:, 1:].contiguous()
+        lm_logits = outputs[0][:, :-1, :].contiguous()
+        labels = lm_labels.contiguous()
         loss_fct = CrossEntropyLoss(ignore_index=-1)
         loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)),
                         labels.view(-1))
@@ -189,6 +189,7 @@ def main():
     parser.add_argument('--n_valid', type=int, default=374)
     parser.add_argument('--early_stop', action='store_true')
     parser.add_argument('--early_stop_tolerance', type=int, default=3)
+    parser.add_argument('--check_point', type=str, default='')
 
     parser.add_argument('--server_ip', type=str, default='', help="Can be used for distant debugging.")
     parser.add_argument('--server_port', type=str, default='', help="Can be used for distant debugging.")
@@ -243,6 +244,9 @@ def main():
         eval_sampler = RandomSampler(eval_data, replacement=True, num_samples=100)
         eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
 
+        sample_data = encode_dataset(args, device, tokenizer, pad_token, _type="valid_temp")
+        sample_dataloader = DataLoader(sample_data, sampler=SequentialSampler(sample_data), batch_size=1)
+
     # Prepare optimizer
     if args.do_train:
         param_optimizer = list(model.named_parameters())
@@ -267,8 +271,16 @@ def main():
         if n_gpu > 1:
             model = torch.nn.DataParallel(model)
 
+        start = 0
+        if args.check_point:
+            check_point_file = os.path.join(args.output_dir, args.check_point)
+            state_dict = torch.load(check_point_file)
+            model.load_state_dict(state_dict)
+            logger.info(" start training from check point %s" % check_point_file)
+            start = int(args.check_point.split("-")[1]) + 1
+
         nb_tr_steps, tr_loss, exp_average_loss = 0, 0, None
-        for ep in trange(int(args.num_train_epochs), desc="Epoch"):
+        for ep in trange(start, int(args.num_train_epochs), desc="Epoch"):
             model.train()
             tr_loss = 0
             nb_tr_steps = 0
@@ -279,12 +291,11 @@ def main():
 
                 inputs = {'record_ids': record_ids, 'labels': lm_labels}
                 outputs = model(**inputs)
-                lm_logits = outputs[0][:, n_record:-1, :].contiguous()
-                labels = lm_labels[:, 1:].contiguous()
+                lm_logits = outputs[0][:, :-1, :].contiguous()
+                labels = lm_labels.contiguous()
                 loss_fct = CrossEntropyLoss(ignore_index=-1)
                 loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)),
                                 labels.view(-1))
-
                 if n_gpu > 1:
                     loss = loss.mean()
                 loss.backward(retain_graph=True)
@@ -296,7 +307,6 @@ def main():
                 tqdm_bar.desc = "Training loss: {:.2e} lr: {:.4f}".format(exp_average_loss, optimizer.defaults["lr"])
                 # end of batch
             # end of all batch
-
             # early stopping
             if args.early_stop and ep > 30 and (ep+1) % 4 == 0:
                 logger.info("Epoch %s Validating ..." % str(ep+1))
@@ -322,6 +332,10 @@ def main():
                 model_to_save.config.to_json_file(output_config_file)
                 tokenizer.save_vocabulary(args.output_dir)
                 logger.info("Save model %s" % output_model_file + "-" + str(ep+1))
+                logger.info("Sample summary by %s" % output_model_file + "-" + str(ep+1))
+                for record_ids, _ in sample_dataloader:
+                    summary = generate_summary(model, record_ids, tokenizer)
+                    print(summary.encode('utf-8').decode('utf-8'))
             # end of epoch
 
     # Save a trained model
@@ -377,7 +391,6 @@ def main():
                 writer.write("%s = %s\n" % (key, str(result[key])))
 
     if args.do_generate:
-        max_seq_len = DEC_MAX_LEN
         model = GPT2EntityEncoderLMModel.from_pretrained(args.output_dir)
         state_dict = torch.load(os.path.join(args.output_dir, args.generate_model_file))
         model.load_state_dict(state_dict)
@@ -394,17 +407,7 @@ def main():
             for batch in test_dataloader:
                 batch = tuple(t.to(device) for t in batch)
                 record_ids, lm_labels = batch
-                summary_ids = None
-                with torch.no_grad():
-                    for i in range(max_seq_len):
-                        outputs = model(record_ids, summary_ids=summary_ids)
-                        next_token_logits = outputs[0][:, -1, :]
-                        next_token_id = torch.argmax(next_token_logits).view(-1, 1)
-                        summary_ids = next_token_id if i == 0 else torch.cat((summary_ids, next_token_id), dim=1)
-                        next_token = tokenizer.convert_ids_to_tokens(next_token_id[0].tolist())[0]
-                        if next_token == '<|endoftext|>' or next_token is None:
-                            break
-                summary = tokenizer.decode(summary_ids[0].tolist(), '<|endoftext|>')
+                summary = generate_summary(model, record_ids, tokenizer)
                 print(summary.encode('utf-8').decode('utf-8'))
                 f.write(summary.encode('utf-8').decode('utf-8') + "\n")
 
@@ -413,6 +416,21 @@ def main():
             # print("---------------------------------------------------------------")
             # print(tokenizer.decode(summary_ids[0].tolist()))
             # print("")
+
+
+def generate_summary(model, record_ids, tokenizer):
+    summary_ids = None
+    with torch.no_grad():
+        for i in range(DEC_MAX_LEN):
+            outputs = model(record_ids, summary_ids=summary_ids)
+            next_token_logits = outputs[0][:, -1, :]
+            next_token_id = torch.argmax(next_token_logits).view(-1, 1)
+            summary_ids = next_token_id if i == 0 else torch.cat((summary_ids, next_token_id), dim=1)
+            next_token = tokenizer.convert_ids_to_tokens(next_token_id[0].tolist())[0]
+            if next_token == '<|endoftext|>' or next_token is None:
+                break
+    summary = tokenizer.decode(summary_ids[0].tolist(), '<|endoftext|>')
+    return summary
 
 
 if __name__ == '__main__':
