@@ -92,6 +92,9 @@ def build_decoder(opt, embeddings):
     """
     dec_type = "ifrnn" if opt.decoder_type == "rnn" and opt.input_feed \
                else opt.decoder_type
+    if opt.decoder_type == "rnn" and opt.input_feed and opt.review_net\
+            and opt.copy_attn:
+        dec_type = "reviewcopyrnn"
     return str2dec[dec_type].from_opt(opt, embeddings)
 
 

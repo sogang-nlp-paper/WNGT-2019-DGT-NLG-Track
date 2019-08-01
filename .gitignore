@@ -10,6 +10,7 @@ data/
 *.out
 *.t7
 *.tgz
+eda.ipynb
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
