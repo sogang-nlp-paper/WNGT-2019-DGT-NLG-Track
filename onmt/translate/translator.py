@@ -622,9 +622,13 @@ class Translator(object):
                                      for h, c in zip(
                 self.model.reviewer.state["hidden"], enc_states))
             self.model.decoder.init_state(src, memory_bank, enc_review_state)
-            memory_bank = review_outs # so that decoder attends on reviews
+            if self.model.decoder.copy_attn:
+                memory_bank = (review_outs, memory_bank)
+            else:
+                memory_bank = review_outs # so that decoder attends on reviews
         else: # NMTModel
             self.model.decoder.init_state(src, memory_bank, enc_states)
+
 
         results = {
             "predictions": None,
