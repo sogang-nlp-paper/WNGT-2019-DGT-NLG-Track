@@ -403,7 +403,7 @@ def main():
         model.eval()
 
         logger.info("***** Generate summary %s *****" % (args.output_dir+"/pred.txt"))
-        with open(os.path.join(args.output_dir, "pred.txt"), "w") as f:
+        with open(os.path.join(args.output_dir, "pred.txt"), "w", encoding="utf-8") as f:
             for batch in test_dataloader:
                 batch = tuple(t.to(device) for t in batch)
                 record_ids, lm_labels = batch

@@ -29,6 +29,7 @@ import torch
 import torch.nn as nn
 from torch.nn import CrossEntropyLoss
 from torch.nn.parameter import Parameter
+from functools import partial
 
 from modeling_utils import (Conv1D, CONFIG_NAME, WEIGHTS_NAME, PretrainedConfig,
                              PreTrainedModel, prune_conv1d_layer, SequenceSummary,
@@ -564,10 +565,12 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         self.drop = nn.Dropout(config.embd_pdrop)
         self.h = nn.ModuleList([Block(config.n_ctx, config, scale=True) for _ in range(config.n_layer)])
         self.ln_f = LayerNorm(config.n_embd, eps=config.layer_norm_epsilon)
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        self.ent_enc = Conv1D(1, 48)
+        self.lm_head = nn.Linear(config.n_embd * 3, config.vocab_size, bias=False)
+        self.ent_enc = Conv1D(config.n_embd, 48 * config.n_embd)
         self.sigmoid = nn.Sigmoid()
         self.rec_enc = Conv1D(config.n_embd, 602 * config.n_embd)
+        self.attn_r = nn.Linear(config.n_embd, config.n_embd)
+        self.attn_e = nn.Linear(config.n_embd, config.n_embd)
 
         self.n_embd = config.n_embd
 
@@ -592,26 +595,32 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         """
         batch_size = input_ids.size(0)
         n_record = input_ids.size(1)
-        n_features = input_ids.size(2)
 
         input_ids = input_ids.view(batch_size, n_record, -1)  # (N, 602, 48)
         mask = (input_ids > 0).float()
         inputs_embeds = self.wte(input_ids)  # (N, 602, 48, 768)
         inputs_embeds = inputs_embeds * mask.unsqueeze(3)
-        inputs_embeds = self.ent_enc(inputs_embeds.transpose(2, 3).contiguous())  # (N, 602, 768, 1)
-        record_embeds = self.rec_enc(inputs_embeds.view(batch_size, -1))
-        return record_embeds.unsqueeze(1)
+        record_embeds = self.ent_enc(inputs_embeds.view(batch_size, n_record, -1))  # (N, 602, 768)
+        record_hidden = self.rec_enc(record_embeds.view(batch_size, -1))
+        return record_embeds, record_hidden.unsqueeze(1)
 
-        # inputs_embeds = input_ids.new_zeros((batch_size, n_record, n_features, self.n_embd)).float()
-        # for i in range(n_features):
-        #     entity_ids = input_ids[:, :, i]  # entity_ids = (N, 602, 12)
-        #     mask = (entity_ids > 0).float()
-        #     entity_embeds = self.wte(entity_ids)  # (N, 602, 12, 768)
-        #     inputs_embeds[:, :, i, :] = (entity_embeds * mask.unsqueeze(3)).sum(dim=2) / mask.sum(dim=2).unsqueeze(2)
-        #
-        # inputs_embeds = self.ent_enc(inputs_embeds.view(batch_size, n_record, -1))  # => (N, 602, 768)
-        # record_embeds = self.rec_enc(inputs_embeds).view(batch_size, 1, -1)
-        # return record_embeds
+    def _encode_entity(self, record_embeds):
+        """ encode each entity (total 28 entities)
+            ex) (N, 602, 768) => (N, 28, 768)
+        :param record_embeds: = (N, n_rec, n_embd)
+        :return: entity_embeds = (N, n_entity, n_embd)
+        """
+        entity_idx = [22] * 26 + [15] * 2
+        embeds_by_entity = record_embeds.split(entity_idx, dim=1)
+        t_mean = partial(torch.mean, dim=1)
+        mean_pool = [x.unsqueeze(1) for x in tuple(map(t_mean, embeds_by_entity))]
+        return torch.cat(mean_pool, dim=1)
+
+    def _attn(self, hidden, obj, func):
+        w = func(obj)
+        a = nn.Softmax(dim=2)(torch.matmul(hidden, w.transpose(1, 2)))
+        context = torch.matmul(a, obj)
+        return context
 
     def forward(self, record_ids, summary_ids=None, position_ids=None, token_type_ids=None, labels=None, past=None, head_mask=None):
         if past is None:
@@ -637,7 +646,7 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         else:
             head_mask = [None] * self.config.n_layer
 
-        inputs_embeds = self._encode_records(record_ids)  # => (N, 1, 768)
+        record_embeds, inputs_embeds = self._encode_records(record_ids)  # => (N, 1, 768)
 
         if labels is not None:
             summary_embeds = self.wte(labels)
@@ -702,7 +711,21 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         # LM head
         transformer_outputs = outputs
         hidden_states = transformer_outputs[0]
-        lm_logits = self.lm_head(hidden_states)  # lm_logits = (N, 602, vocab_size)
+
+        # attention with record_embeds
+        # w_r = self.attn_r(record_embeds)
+        # a_r = nn.Softmax(dim=2)(torch.matmul(hidden_states, w_r.transpose(1, 2)))  # (N, seq_len, n_record)
+        # r_t = torch.matmul(a_r, record_embeds)  # (N, seq_len, 768)
+        r_t = self._attn(hidden_states, record_embeds, self.attn_r)
+
+        # attention with entity_embeds
+        entity_embeds = self._encode_entity(record_embeds)
+        # w_e = self.attn_e(entity_embeds)
+        # a_e = torch.matmul(hidden_states, w_e.transpose(1, 2))
+        # e_t = torch.matmul(a_e, entity_embeds)
+        e_t = self._attn(hidden_states, entity_embeds, self.attn_e)
+
+        lm_logits = self.lm_head(torch.cat([hidden_states, r_t, e_t], dim=2))  # lm_logits = (N, 602, vocab_size)
 
         outputs = (lm_logits,) + transformer_outputs[1:]
         """
