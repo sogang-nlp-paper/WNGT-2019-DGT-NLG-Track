@@ -335,7 +335,7 @@ def main():
                 logger.info("Sample summary by %s" % output_model_file + "-" + str(ep+1))
                 for record_ids, _ in sample_dataloader:
                     summary = generate_summary(model, record_ids, tokenizer)
-                    print(summary.encode('utf-8').decode('utf-8'))
+                    logger.info(summary.encode('utf-8').decode('utf-8'))
             # end of epoch
 
     # Save a trained model
