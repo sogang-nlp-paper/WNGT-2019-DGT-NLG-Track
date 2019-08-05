@@ -391,7 +391,7 @@ class InputFeedRNNDecoder(RNNDecoderBase):
             if self.attentional:
                 decoder_output, p_attn = self.attn(
                     rnn_output,
-                    memory_bank.transpose(0, 1),
+                    memory_bank['emb'].transpose(0, 1),
                     memory_lengths=memory_lengths)
                 attns["std"].append(p_attn)
             else:
@@ -414,7 +414,7 @@ class InputFeedRNNDecoder(RNNDecoderBase):
 
             if self.copy_attn is not None:
                 _, copy_attn = self.copy_attn(
-                    decoder_output, memory_bank.transpose(0, 1))
+                    decoder_output, memory_bank['emb'].transpose(0, 1))
                 attns["copy"] += [copy_attn]
             elif self._reuse_copy_attn:
                 attns["copy"] = attns["std"]

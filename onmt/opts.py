@@ -74,7 +74,8 @@ def model_opts(parser):
               help='Data type of the model.')
 
     group.add('--encoder_type', '-encoder_type', type=str, default='rnn',
-              choices=['rnn', 'brnn', 'mean', 'entity_mean', 'transformer', 'cnn'],
+              choices=['rnn', 'brnn', 'mean', 'entity_mean', 'bientity_mean',
+                       'transformer', 'cnn'],
               help="Type of encoder layer to use. Non-RNN layers "
                    "are experimental. Options are "
                    "[rnn|brnn|mean|transformer|cnn].")
@@ -129,7 +130,7 @@ def model_opts(parser):
               help="Deprecated, use `encoder_type`.")
 
     group.add('--context_gate', '-context_gate', type=str, default=None,
-              choices=['source', 'target', 'both'],
+              choices=['source', 'target', 'both', 'teamplayer'],
               help="Type of context gate to use. "
                    "Do not select for no context gate.")
 

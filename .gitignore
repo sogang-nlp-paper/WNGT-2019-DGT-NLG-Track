@@ -7,7 +7,7 @@ multi-bleu.perl
 *.sublime-*
 .DS_Store
 data/
-models/
+/models/
 *.out
 *.t7
 *.tgz
