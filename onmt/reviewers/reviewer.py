@@ -103,14 +103,19 @@ class InputReviewer(ReviewerBase):
         attns["std"] = []
 
         review_state = self.state["hidden"]
+        review_output = review_state[0][-1] # before
+        review_output = torch.zeros_like(review_state[0][-1]) # after
         for review_t in range(self.review_step):
+            # first applies attention mechanism
             attn_out, p_attn = self.attn(
-                review_state[0][-1],
+                #review_state[0][-1],
+                review_output.squeeze(0),
                 memory_bank.transpose(0, 1),
                 memory_lengths=memory_lengths)
             attns["std"].append(p_attn)
 
             review_input = attn_out.unsqueeze(0)
+            # attention resultas input
             review_output, review_state = self.rnn(review_input, review_state)
 
             review_outs += [self.dropout(review_output)]
@@ -126,7 +131,7 @@ class OutputReviewer(ReviewerBase):
         attns = {}
         # memory bank (src_len, batch, size)
         src_len, batch, _ = memory_bank.size()
-        zero_input = torch.zeros(batch, self.review_step, 0)
+        zero_input = memory_bank.new_zeros(self.review_step, batch, 1)
 
         if isinstance(self.rnn, nn.GRU):
             review_output, review_state = self.rnn(zero_input, self.state["hidden"][0])
@@ -147,4 +152,4 @@ class OutputReviewer(ReviewerBase):
     # FIXME: this seems to raise CUDNN BAD PARAM error
     @property
     def _input_size(self):
-        return 0
+        return 1

@@ -481,7 +481,7 @@ class ReviewCopyRNNDecoder(InputFeedRNNDecoder):
                 decoder_output, p_attn = self.attn(
                     rnn_output,
                     review_bank.transpose(0, 1),
-                    memory_lengths=None) # no padding in review_bank
+                    memory_lengths=None) # no padding in reviewbank
                 attns["std"].append(p_attn)
             else:
                 decoder_output = rnn_output
