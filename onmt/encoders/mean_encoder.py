@@ -118,17 +118,17 @@ class BiEntityMeanEncoder(EncoderBase):
         entity_idx = [22] * 26 + [15] * 2
         emb_by_entity = emb.split(entity_idx, dim=0) # tuple of len 28
         t_mean = partial(torch.mean, dim=0)
-        mean_pool = map(t_mean, emb_by_entity)
+        mean_pool = list(map(t_mean, emb_by_entity))
 
-        player_mean = tuple(mean_pool)[:self.num_entity_player]
+        player_mean = mean_pool[:self.num_entity_player]
         player_mean = torch.cat(player_mean, dim=1) # (64, 16800)
         player_mean = self.player_linear(player_mean) # (64, 600)
 
-        team_mean = tuple(mean_pool)[-self.num_entity_team:]
+        team_mean = mean_pool[-self.num_entity_team:]
         team_mean = torch.cat(team_mean, dim=1)
         team_mean = self.team_linear(team_mean) # (64, 600)
 
-        entity_mean = torch.max(torch.stack(player_mean, team_mean),
+        entity_mean = torch.max(torch.stack((player_mean, team_mean), dim=0),
                                 dim=0)[0] # max pooling
         entity_mean = entity_mean.expand(self.num_layers, batch, emb_dim)
 

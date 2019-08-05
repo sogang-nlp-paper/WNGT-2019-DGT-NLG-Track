@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 from onmt.models.stacked_rnn import StackedLSTM, StackedGRU
-from onmt.modules import context_gate_factory, GlobalAttention
+from onmt.modules import context_gate_factory, GlobalAttention, TeamPlayerContentGate
 from onmt.utils.rnn_factory import rnn_factory
 
 from onmt.utils.misc import aeq
@@ -107,8 +107,10 @@ class RNNDecoderBase(DecoderBase):
         # Set up the context gate.
         self.context_gate = None
         if context_gate is not None:
+            input_size = self._input_size // 2 if context_gate == 'teamplayer'\
+                else self._input_size
             self.context_gate = context_gate_factory(
-                context_gate, self._input_size,
+                context_gate, input_size,
                 hidden_size, hidden_size, hidden_size
             )
 
@@ -397,11 +399,16 @@ class InputFeedRNNDecoder(RNNDecoderBase):
             else:
                 decoder_output = rnn_output
             if self.context_gate is not None:
-                # TODO: context gate should be employed
-                # instead of second RNN transform.
-                decoder_output = self.context_gate(
-                    decoder_input, rnn_output, decoder_output
-                )
+                if isinstance(self.context_gate, TeamPlayerContentGate):
+                    decoder_output = self.context_gate(
+                        memory_bank['team'], memory_bank['player'], decoder_output
+                    )
+                else:
+                    # TODO: context gate should be employed
+                    # instead of second RNN transform.
+                    decoder_output = self.context_gate(
+                        decoder_input, rnn_output, decoder_output
+                    )
             decoder_output = self.dropout(decoder_output)
             input_feed = decoder_output
 
