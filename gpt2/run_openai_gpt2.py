@@ -32,6 +32,7 @@ import os
 import csv
 import random
 import logging
+from itertools import chain
 from tqdm import tqdm, trange
 
 import numpy as np
@@ -70,19 +71,21 @@ def tokenize_and_encode(obj, tokenizer):
 
 
 def encode_dataset(args, device, tokenizer, pad_token, _type="train", _index=False):
-    logger.info("Encoding dataset...")
-    src, tgt = load_rotowire_dataset(args.dataset_path, _type, index=_index)
-    if os.path.exists(os.path.join(args.dataset_path, _type + ".pt")) and _index is False:
-        tensor_dataset = torch.load(os.path.join(args.dataset_path, _type + ".pt"))
-        logger.info("load %s" % os.path.join(args.dataset_path, _type + ".pt"))
+    logger.info("Encoding {} dataset...".format(_type))
+    if os.path.exists(os.path.join(args.dataset_path, "{}.pt".format(_type))) and \
+            os.path.exists(os.path.join(args.dataset_path, "{}_vocab_mask.pt".format(_type))):
+        tensor_dataset = torch.load(os.path.join(args.dataset_path, "{}.pt".format(_type)))
+        record_vocab_mask = torch.load(os.path.join(args.dataset_path, "{}_vocab_mask.pt".format(_type)))
     else:
-        datasets = (src, tgt)
+        raw_src, raw_tgt = load_rotowire_dataset(args.dataset_path, _type, index=_index)
+        datasets = (raw_src, raw_tgt)
         src, tgt = tokenize_and_encode(datasets, tokenizer)
-        tensor_dataset = pre_process_datasets(device, src, tgt, pad_token)
-        if _index is False:  # save only whole dataset
-            torch.save(tensor_dataset, os.path.join(args.dataset_path, _type + ".pt"))
-            logger.info("save %s" % os.path.join(args.dataset_path, _type + ".pt"))
-    return tensor_dataset
+        tensor_dataset, record_vocab_mask = pre_process_datasets(device, src, tgt, pad_token, tokenizer.vocab_size)
+        logger.info("save {}.pt binary...".format(_type))
+        torch.save(tensor_dataset, os.path.join(args.dataset_path, "{}.pt".format(_type)))
+        logger.info("save {}_vocab_mask.pt binary...".format(_type))
+        torch.save(record_vocab_mask, os.path.join(args.dataset_path, "{}_vocab_mask.pt".format(_type)))
+    return tensor_dataset, record_vocab_mask.float()
 
 
 def load_rotowire_dataset(dataset_path, _type="train", index=False):
@@ -103,7 +106,7 @@ def load_rotowire_dataset(dataset_path, _type="train", index=False):
     return src_data, tgt_data
 
 
-def pre_process_datasets(device, src, tgt, pad_token):
+def pre_process_datasets(device, src, tgt, pad_token, vocab_size):
     """ pre-process Rotowire dataset
     set padding for WPE
     'F|Stephen Curry|START_POSITION|HOME'
@@ -116,9 +119,12 @@ def pre_process_datasets(device, src, tgt, pad_token):
         for entity in record:
             src_max_len = max(src_max_len, max([len(e) for e in entity]))
 
+    record_vocab_mask = torch.zeros(vocab_size).to(device)
     for record in src:
         for entity in record:
             for i, elem in enumerate(entity):
+                for e in elem:
+                    record_vocab_mask[int(e)] = 1
                 pad_size = src_max_len - len(elem)
                 if pad_size > 0:
                     entity[i] = elem + ([0] * pad_size)
@@ -128,7 +134,6 @@ def pre_process_datasets(device, src, tgt, pad_token):
     tgt_max_len = min(max([len(summary) for summary in tgt]), DEC_MAX_LEN)
     # tgt_max_len = tgt_length
     for i, summary in enumerate(tgt):
-        # FIXME remove pad_token in head
         summary = summary + [pad_token]
         pad_size = tgt_max_len - len(summary)
         tgt[i] = summary + ([pad_token] * pad_size) if pad_size > 0 else summary[:tgt_max_len]
@@ -137,10 +142,10 @@ def pre_process_datasets(device, src, tgt, pad_token):
     src = torch.tensor(src, dtype=torch.long).to(device)  # (N, 602, 4, src_max_len)
     tgt = torch.tensor(tgt, dtype=torch.long).to(device)  # (N, tgt_max_len)
 
-    return TensorDataset(src, tgt)
+    return TensorDataset(src, tgt), record_vocab_mask.to(device)
 
 
-def validate(model, device, n_gpu, eval_dataloader):
+def validate(model, device, n_gpu, eval_dataloader, vocab_mask):
     model.eval()
     tr_loss = 0
     nb_tr_steps = 0
@@ -148,7 +153,7 @@ def validate(model, device, n_gpu, eval_dataloader):
         batch = tuple(t.to(device) for t in batch)
         record_ids, lm_labels = batch
 
-        inputs = {'record_ids': record_ids, 'labels': lm_labels}
+        inputs = {'record_ids': record_ids, 'labels': lm_labels, 'src_vocab_mask': vocab_mask}
         outputs = model(**inputs)
         lm_logits = outputs[0][:, :-1, :].contiguous()
         labels = lm_labels.contiguous()
@@ -234,8 +239,8 @@ def main():
         model = GPT2EntityEncoderLMModel.from_pretrained(args.model_name)
         model.to(device)
 
-        train_data = encode_dataset(args, device, tokenizer, pad_token, _type="train")
-        eval_data = encode_dataset(args, device, tokenizer, pad_token, _type="valid")
+        train_data, train_vocab_mask = encode_dataset(args, device, tokenizer, pad_token, _type="train")
+        eval_data, eval_vocab_mask = encode_dataset(args, device, tokenizer, pad_token, _type="valid")
 
         train_sampler = RandomSampler(train_data)
         train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
@@ -244,7 +249,7 @@ def main():
         eval_sampler = RandomSampler(eval_data, replacement=True, num_samples=100)
         eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
 
-        sample_data = encode_dataset(args, device, tokenizer, pad_token, _type="valid_temp")
+        sample_data, sample_vocab_mask = encode_dataset(args, device, tokenizer, pad_token, _type="valid_temp")
         sample_dataloader = DataLoader(sample_data, sampler=SequentialSampler(sample_data), batch_size=1)
 
     # Prepare optimizer
@@ -289,7 +294,7 @@ def main():
                 batch = tuple(t.to(device) for t in batch)
                 record_ids, lm_labels = batch
 
-                inputs = {'record_ids': record_ids, 'labels': lm_labels}
+                inputs = {'record_ids': record_ids, 'labels': lm_labels, 'src_vocab_mask': train_vocab_mask}
                 outputs = model(**inputs)
                 lm_logits = outputs[0][:, :-1, :].contiguous()
                 labels = lm_labels.contiguous()
@@ -310,7 +315,7 @@ def main():
             # early stopping
             if args.early_stop and ep > 30 and (ep+1) % 4 == 0:
                 logger.info("Epoch %s Validating ..." % str(ep+1))
-                eval_loss = validate(model, device, n_gpu, eval_dataloader)
+                eval_loss = validate(model, device, n_gpu, eval_dataloader, eval_vocab_mask)
                 if eval_loss > pre_loss:
                     tolerance -= 1
                     stop_flag = True if tolerance == 0 else False
@@ -334,7 +339,7 @@ def main():
                 logger.info("Save model %s" % output_model_file + "-" + str(ep+1))
                 logger.info("Sample summary by %s" % output_model_file + "-" + str(ep+1))
                 for record_ids, _ in sample_dataloader:
-                    summary = generate_summary(model, record_ids, tokenizer)
+                    summary = generate_summary(model, record_ids, tokenizer, sample_vocab_mask)
                     logger.info(summary.encode('utf-8').decode('utf-8'))
             # end of epoch
 
@@ -351,45 +356,6 @@ def main():
         model_to_save.config.to_json_file(output_config_file)
         tokenizer.save_vocabulary(args.output_dir)
 
-    if args.do_eval:
-        # Load a trained model and vocabulary that you have fine-tuned
-        model = GPT2EntityEncoderLMModel.from_pretrained(args.output_dir)
-        tokenizer = GPT2Tokenizer.from_pretrained(args.output_dir)
-        model.to(device)
-        model.eval()
-        eval_loss, eval_accuracy = 0, 0
-        nb_eval_steps, nb_eval_examples = 0, 0
-        for batch in tqdm(eval_dataloader, desc="Evaluating"):
-            batch = tuple(t.to(device) for t in batch)
-            input_ids, lm_labels = batch
-            with torch.no_grad():
-                lm_loss = model(input_ids, labels=lm_labels)
-                lm_logits, _ = model(input_ids)
-
-            lm_logits = lm_logits.detach().cpu().numpy()
-            lm_labels = lm_labels.to('cpu').numpy()
-            tmp_eval_accuracy = accuracy(lm_logits, lm_labels)
-
-            eval_loss += lm_loss.mean().item()
-            eval_accuracy += tmp_eval_accuracy
-
-            nb_eval_examples += input_ids.size(0)
-            nb_eval_steps += 1
-
-        eval_loss = eval_loss / nb_eval_steps
-        eval_accuracy = eval_accuracy / nb_eval_examples
-        train_loss = tr_loss/nb_tr_steps if args.do_train else None
-        result = {'eval_loss': eval_loss,
-                  'eval_accuracy': eval_accuracy,
-                  'train_loss': train_loss}
-
-        output_eval_file = os.path.join(args.output_dir, "eval_results.txt")
-        with open(output_eval_file, "w") as writer:
-            logger.info("***** Eval results *****")
-            for key in sorted(result.keys()):
-                logger.info("  %s = %s", key, str(result[key]))
-                writer.write("%s = %s\n" % (key, str(result[key])))
-
     if args.do_generate:
         model = GPT2EntityEncoderLMModel.from_pretrained(args.output_dir)
         state_dict = torch.load(os.path.join(args.output_dir, args.generate_model_file))
@@ -397,7 +363,7 @@ def main():
         model.to(device)
 
         # test_data = encode_dataset(args, device, tokenizer, pad_token, _type="test", _index=53)
-        test_data = encode_dataset(args, device, tokenizer, pad_token, _type="test")
+        test_data, test_vocab_mask = encode_dataset(args, device, tokenizer, pad_token, _type="test")
         test_sampler = SequentialSampler(test_data)
         test_dataloader = DataLoader(test_data, sampler=test_sampler, batch_size=1)
         model.eval()
@@ -407,7 +373,7 @@ def main():
             for batch in test_dataloader:
                 batch = tuple(t.to(device) for t in batch)
                 record_ids, lm_labels = batch
-                summary = generate_summary(model, record_ids, tokenizer)
+                summary = generate_summary(model, record_ids, tokenizer, test_vocab_mask)
                 print(summary.encode('utf-8').decode('utf-8'))
                 f.write(summary.encode('utf-8').decode('utf-8') + "\n")
 
@@ -418,11 +384,11 @@ def main():
             # print("")
 
 
-def generate_summary(model, record_ids, tokenizer):
+def generate_summary(model, record_ids, tokenizer, vocab_mask):
     summary_ids = None
     with torch.no_grad():
         for i in range(DEC_MAX_LEN):
-            outputs = model(record_ids, summary_ids=summary_ids)
+            outputs = model(record_ids, summary_ids=summary_ids, src_vocab_mask=vocab_mask)
             next_token_logits = outputs[0][:, -1, :]
             next_token_id = torch.argmax(next_token_logits).view(-1, 1)
             summary_ids = next_token_id if i == 0 else torch.cat((summary_ids, next_token_id), dim=1)

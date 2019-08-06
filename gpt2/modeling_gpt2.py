@@ -571,6 +571,7 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         self.rec_enc = Conv1D(config.n_embd, 602 * config.n_embd)
         self.attn_r = nn.Linear(config.n_embd, config.n_embd)
         self.attn_e = nn.Linear(config.n_embd, config.n_embd)
+        self.gate_w = nn.Linear(config.n_embd * 2, 1)
 
         self.n_embd = config.n_embd
 
@@ -622,7 +623,8 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         context = torch.matmul(a, obj)
         return context
 
-    def forward(self, record_ids, summary_ids=None, position_ids=None, token_type_ids=None, labels=None, past=None, head_mask=None):
+    def forward(self, record_ids, summary_ids=None, position_ids=None, token_type_ids=None,
+                labels=None, past=None, head_mask=None, src_vocab_mask=None):
         if past is None:
             past_length = 0
             past = [None] * len(self.h)
@@ -646,7 +648,7 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         else:
             head_mask = [None] * self.config.n_layer
 
-        record_embeds, inputs_embeds = self._encode_records(record_ids)  # => (N, 1, 768)
+        record_embeds, inputs_embeds = self._encode_records(record_ids)
 
         if labels is not None:
             summary_embeds = self.wte(labels)
@@ -691,7 +693,6 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
                 all_attentions.append(outputs[2])
 
         hidden_states = self.ln_f(hidden_states)  # LayerNorm
-        # hidden_states = (N, 602, 768)
 
         # hidden_states = hidden_states.view(*output_shape)
         # Add last hidden state
@@ -712,34 +713,25 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         transformer_outputs = outputs
         hidden_states = transformer_outputs[0]
 
+        # gate
+        temp = self.gate_w(torch.cat([hidden_states, inputs_embeds], dim=2))
+        gate = self.sigmoid(temp)  # (N, seq_len, 1)
+
         # attention with record_embeds
-        # w_r = self.attn_r(record_embeds)
-        # a_r = nn.Softmax(dim=2)(torch.matmul(hidden_states, w_r.transpose(1, 2)))  # (N, seq_len, n_record)
-        # r_t = torch.matmul(a_r, record_embeds)  # (N, seq_len, 768)
         r_t = self._attn(hidden_states, record_embeds, self.attn_r)
 
         # attention with entity_embeds
         entity_embeds = self._encode_entity(record_embeds)
-        # w_e = self.attn_e(entity_embeds)
-        # a_e = torch.matmul(hidden_states, w_e.transpose(1, 2))
-        # e_t = torch.matmul(a_e, entity_embeds)
         e_t = self._attn(hidden_states, entity_embeds, self.attn_e)
 
-        lm_logits = self.lm_head(torch.cat([hidden_states, r_t, e_t], dim=2))  # lm_logits = (N, 602, vocab_size)
+        lm_logits = self.lm_head(torch.cat([hidden_states, r_t, e_t], dim=2))  # lm_logits = (N, seq_len, vocab_size)
+
+        # copy gate
+        lm_logits = (lm_logits * src_vocab_mask) * gate + \
+                    (lm_logits * (src_vocab_mask == 0).float()) * (1-gate)
 
         outputs = (lm_logits,) + transformer_outputs[1:]
-        """
-        if labels is not None:  # labels = (N, 388)
-            # Shift so that tokens < n predict n
-            # shift_logits = lm_logits[..., :-1, :].contiguous()
-            # shift_labels = labels[..., 1:].contiguous()
-            # Flatten the tokens
-            loss_fct = CrossEntropyLoss(ignore_index=-1)
-            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)),
-                            shift_labels.view(-1))
-            outputs = (loss,) + outputs
-        """
-        return outputs  # (loss), lm_logits, presents, (all hidden_states), (attentions)
+        return outputs  # lm_logits, presents, (all hidden_states), (attentions)
 
 
 @add_start_docstrings("""The GPT2 Model transformer with a language modeling head on top
