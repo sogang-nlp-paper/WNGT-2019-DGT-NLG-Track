@@ -324,7 +324,7 @@ def main():
                 pre_loss = eval_loss
             if args.early_stop and stop_flag:
                 logger.info("Training finished after not improving. Early Stop!")
-                break
+                # break
             # save model
             if args.do_save and (ep+1) % 10 == 0:
                 model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self

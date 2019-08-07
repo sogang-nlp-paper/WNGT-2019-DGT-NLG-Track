@@ -566,12 +566,14 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         self.h = nn.ModuleList([Block(config.n_ctx, config, scale=True) for _ in range(config.n_layer)])
         self.ln_f = LayerNorm(config.n_embd, eps=config.layer_norm_epsilon)
         self.lm_head = nn.Linear(config.n_embd * 3, config.vocab_size, bias=False)
-        self.ent_enc = Conv1D(config.n_embd, 48 * config.n_embd)
+        self.ent_enc = Conv1D(config.n_embd, 4 * config.n_embd)
         self.sigmoid = nn.Sigmoid()
         self.rec_enc = Conv1D(config.n_embd, 602 * config.n_embd)
         self.attn_r = nn.Linear(config.n_embd, config.n_embd)
         self.attn_e = nn.Linear(config.n_embd, config.n_embd)
         self.gate_w = nn.Linear(config.n_embd * 2, 1)
+        self.tanh = nn.Tanh()
+        self.relu = nn.LeakyReLU()
 
         self.n_embd = config.n_embd
 
@@ -593,17 +595,26 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
             input:  inputs_ids = (N, n_rec, n_feat, max_feat_size)
             output: inputs_embeds = (N, n_rec, n_embd)
             ex) (N, 602, 4, 12) => (N, 602, 768)
+        :return: record_matrix = (N, 2408, 768)
+                 record_embeds = (N, 602, 768)
+                 record_hidden = (N, 1, 768)
         """
         batch_size = input_ids.size(0)
         n_record = input_ids.size(1)
+        n_features = input_ids.size(2)
 
-        input_ids = input_ids.view(batch_size, n_record, -1)  # (N, 602, 48)
-        mask = (input_ids > 0).float()
-        inputs_embeds = self.wte(input_ids)  # (N, 602, 48, 768)
-        inputs_embeds = inputs_embeds * mask.unsqueeze(3)
-        record_embeds = self.ent_enc(inputs_embeds.view(batch_size, n_record, -1))  # (N, 602, 768)
+        inputs_embeds = input_ids.new_zeros((batch_size, n_record, n_features, self.n_embd)).float()
+        for i in range(n_features):
+            entity_ids = input_ids[:, :, i]  # entity_ids = (N, 602, 12)
+            mask = (entity_ids > 0).float()
+            entity_embeds = self.wte(entity_ids)  # (N, 602, 12, 768)
+            inputs_embeds[:, :, i, :] = (entity_embeds * mask.unsqueeze(3)).sum(dim=2) / mask.sum(dim=2).unsqueeze(2)
+
+        # inputs_embeds = (N, 602, 4, 768)
+        record_embeds = self.relu(self.ent_enc(inputs_embeds.view(batch_size, n_record, -1)))  # (N, 602, 786)
+        record_matrix = inputs_embeds.view(batch_size, -1, self.n_embd)  # (N, 2408, 768)
         record_hidden = self.rec_enc(record_embeds.view(batch_size, -1))
-        return record_embeds, record_hidden.unsqueeze(1)
+        return record_matrix, record_embeds, record_hidden.unsqueeze(1)
 
     def _encode_entity(self, record_embeds):
         """ encode each entity (total 28 entities)
@@ -648,7 +659,7 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         else:
             head_mask = [None] * self.config.n_layer
 
-        record_embeds, inputs_embeds = self._encode_records(record_ids)
+        record_matrix, record_embeds, inputs_embeds = self._encode_records(record_ids)
 
         if labels is not None:
             summary_embeds = self.wte(labels)
@@ -718,11 +729,11 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         gate = self.sigmoid(temp)  # (N, seq_len, 1)
 
         # attention with record_embeds
-        r_t = self._attn(hidden_states, record_embeds, self.attn_r)
+        r_t = self.tanh(self._attn(hidden_states, record_matrix, self.attn_r))
 
         # attention with entity_embeds
         entity_embeds = self._encode_entity(record_embeds)
-        e_t = self._attn(hidden_states, entity_embeds, self.attn_e)
+        e_t = self.tanh(self._attn(hidden_states, entity_embeds, self.attn_e))
 
         lm_logits = self.lm_head(torch.cat([hidden_states, r_t, e_t], dim=2))  # lm_logits = (N, seq_len, vocab_size)
 

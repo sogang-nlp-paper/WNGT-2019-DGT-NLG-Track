@@ -16,7 +16,8 @@ To train a model,
 python run_openai_gpt2.py \
     --model_name gpt2 \
     --do_train \
-    --dataset_path data/rotowire \
+    --do_save \
+    --dataset_path ../data/rotowire \
     --output_dir temp \
     --train_batch_size 4 \
     --eval_batch_size 4 \
@@ -30,7 +31,7 @@ To generate summary,
 python run_openai_gpt2.py \
     --model_name gpt2 \
     --do_generate \
-    --dataset_path data/rotowire \
+    --dataset_path ../data/rotowire \
     --output_dir temp \
     --generate_model_file pytorch_model.bin
 ```
