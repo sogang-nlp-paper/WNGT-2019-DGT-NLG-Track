@@ -571,7 +571,8 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         self.rec_enc = Conv1D(config.n_embd, 602 * config.n_embd)
         self.attn_r = nn.Linear(config.n_embd, config.n_embd)
         self.attn_e = nn.Linear(config.n_embd, config.n_embd)
-        self.gate_w = nn.Linear(config.n_embd * 2, 1)
+        self.gate_w1 = nn.Linear(config.n_embd * 2, config.n_embd)
+        self.gate_w2 = nn.Linear(config.n_embd, config.vocab_size)
         self.tanh = nn.Tanh()
         self.relu = nn.LeakyReLU()
 
@@ -632,7 +633,7 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         w = func(obj)
         a = nn.Softmax(dim=2)(torch.matmul(hidden, w.transpose(1, 2)))
         context = torch.matmul(a, obj)
-        return context
+        return self.tanh(context)
 
     def forward(self, record_ids, summary_ids=None, position_ids=None, token_type_ids=None,
                 labels=None, past=None, head_mask=None, src_vocab_mask=None):
@@ -725,21 +726,22 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         hidden_states = transformer_outputs[0]
 
         # gate
-        temp = self.gate_w(torch.cat([hidden_states, inputs_embeds], dim=2))
-        gate = self.sigmoid(temp)  # (N, seq_len, 1)
+        temp = self.gate_w2(self.relu(
+            self.gate_w1(torch.cat([hidden_states, inputs_embeds], dim=2))))
+        gate = self.sigmoid(temp)  # (N, seq_len, vocab_size??)
 
         # attention with record_embeds
-        r_t = self.tanh(self._attn(hidden_states, record_matrix, self.attn_r))
+        r_t = self._attn(hidden_states, record_matrix, self.attn_r)
 
         # attention with entity_embeds
         entity_embeds = self._encode_entity(record_embeds)
-        e_t = self.tanh(self._attn(hidden_states, entity_embeds, self.attn_e))
+        e_t = self._attn(hidden_states, entity_embeds, self.attn_e)
 
         lm_logits = self.lm_head(torch.cat([hidden_states, r_t, e_t], dim=2))  # lm_logits = (N, seq_len, vocab_size)
 
         # copy gate
         lm_logits = (lm_logits * src_vocab_mask) * gate + \
-                    (lm_logits * (src_vocab_mask == 0).float()) * (1-gate)
+                     (lm_logits * (src_vocab_mask == 0).float()) * (1-gate)
 
         outputs = (lm_logits,) + transformer_outputs[1:]
         return outputs  # lm_logits, presents, (all hidden_states), (attentions)
