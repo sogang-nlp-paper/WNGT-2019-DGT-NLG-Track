@@ -745,7 +745,7 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         lm_logits = (lm_logits * src_vocab_mask) * gate + \
                     (lm_logits * (src_vocab_mask == 0).float()) * (1-gate)
 
-        outputs = (lm_logits,) + transformer_outputs[1:]
+        outputs = (lm_logits,) + transformer_outputs[1:] + (gate,)
         return outputs  # lm_logits, presents, (all hidden_states), (attentions)
 
 

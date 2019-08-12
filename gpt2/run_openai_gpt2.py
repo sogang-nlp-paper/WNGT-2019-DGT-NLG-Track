@@ -40,7 +40,7 @@ import torch
 from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
                               TensorDataset)
 
-from torch.nn import CrossEntropyLoss
+from torch.nn import CrossEntropyLoss, BCELoss
 
 from pytorch_transformers import (GPT2Tokenizer,
                                   AdamW, cached_path, WEIGHTS_NAME, CONFIG_NAME)
@@ -132,17 +132,22 @@ def pre_process_datasets(device, src, tgt, pad_token, vocab_size):
 
     # padding for tgt
     tgt_max_len = min(max([len(summary) for summary in tgt]), DEC_MAX_LEN)
-    # tgt_max_len = tgt_length
+
+    # for copy supervision
+    copy_labels = []
     for i, summary in enumerate(tgt):
         summary = summary + [pad_token]
         pad_size = tgt_max_len - len(summary)
         tgt[i] = summary + ([pad_token] * pad_size) if pad_size > 0 else summary[:tgt_max_len]
+        copy_labels.append([record_vocab_mask[x].item() for x in tgt[i]])
         assert len(tgt[i]) == tgt_max_len
 
     src = torch.tensor(src, dtype=torch.long).to(device)  # (N, 602, 4, src_max_len)
     tgt = torch.tensor(tgt, dtype=torch.long).to(device)  # (N, tgt_max_len)
 
-    return TensorDataset(src, tgt), record_vocab_mask.to(device)
+    copy_labels = torch.tensor(copy_labels, dtype=torch.float).to(device)
+
+    return TensorDataset(src, tgt, copy_labels), record_vocab_mask.to(device)
 
 
 def validate(model, device, n_gpu, eval_dataloader, vocab_mask):
@@ -151,15 +156,18 @@ def validate(model, device, n_gpu, eval_dataloader, vocab_mask):
     nb_tr_steps = 0
     for step, batch in enumerate(eval_dataloader):
         batch = tuple(t.to(device) for t in batch)
-        record_ids, lm_labels = batch
+        record_ids, lm_labels, copy_labels = batch
 
         inputs = {'record_ids': record_ids, 'labels': lm_labels, 'src_vocab_mask': vocab_mask}
         outputs = model(**inputs)
         lm_logits = outputs[0][:, :-1, :].contiguous()
         labels = lm_labels.contiguous()
         loss_fct = CrossEntropyLoss(ignore_index=-1)
-        loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)),
-                        labels.view(-1))
+        loss_lm = loss_fct(lm_logits.view(-1, lm_logits.size(-1)),
+                           labels.view(-1))
+        gate = outputs[-1]
+        loss_gate = BCELoss()(gate.view(-1), copy_labels.view(-1))
+        loss = (loss_lm + loss_gate) / 2
         if n_gpu > 1:
             loss = loss.mean()
         tr_loss += loss.item()
@@ -292,15 +300,19 @@ def main():
             tqdm_bar = tqdm(train_dataloader, desc="Training")
             for step, batch in enumerate(tqdm_bar):
                 batch = tuple(t.to(device) for t in batch)
-                record_ids, lm_labels = batch
+                record_ids, lm_labels, copy_labels = batch
 
                 inputs = {'record_ids': record_ids, 'labels': lm_labels, 'src_vocab_mask': train_vocab_mask}
                 outputs = model(**inputs)
                 lm_logits = outputs[0][:, :-1, :].contiguous()
                 labels = lm_labels.contiguous()
                 loss_fct = CrossEntropyLoss(ignore_index=-1)
-                loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)),
-                                labels.view(-1))
+                loss_lm = loss_fct(lm_logits.view(-1, lm_logits.size(-1)),
+                                   labels.view(-1))
+                # loss for copy supervision
+                gate = outputs[-1][:, :-1, :].contiguous()
+                loss_gate = BCELoss()(gate.view(-1), copy_labels.view(-1))
+                loss = loss_lm + loss_gate
                 if n_gpu > 1:
                     loss = loss.mean()
                 loss.backward(retain_graph=True)
@@ -338,7 +350,7 @@ def main():
                 tokenizer.save_vocabulary(args.output_dir)
                 logger.info("Save model %s" % output_model_file + "-" + str(ep+1))
                 logger.info("Sample summary by %s" % output_model_file + "-" + str(ep+1))
-                for record_ids, _ in sample_dataloader:
+                for record_ids, _, _ in sample_dataloader:
                     summary = generate_summary(model, record_ids, tokenizer, sample_vocab_mask)
                     logger.info(summary.encode('utf-8').decode('utf-8'))
             # end of epoch
@@ -372,7 +384,7 @@ def main():
         with open(os.path.join(args.output_dir, "pred.txt"), "w", encoding="utf-8") as f:
             for batch in test_dataloader:
                 batch = tuple(t.to(device) for t in batch)
-                record_ids, lm_labels = batch
+                record_ids, lm_labels, _ = batch
                 summary = generate_summary(model, record_ids, tokenizer, test_vocab_mask)
                 print(summary.encode('utf-8').decode('utf-8'))
                 f.write(summary.encode('utf-8').decode('utf-8') + "\n")
