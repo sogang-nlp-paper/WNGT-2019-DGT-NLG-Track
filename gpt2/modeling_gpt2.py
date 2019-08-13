@@ -727,7 +727,7 @@ class GPT2EntityEncoderLMModel(GPT2PreTrainedModel):
         hidden_states = transformer_outputs[0]
 
         # attention with record_embeds
-        r_t = self._attn(hidden_states, record_matrix, self.attn_r)
+        r_t = self._attn(hidden_states, record_embeds, self.attn_r)
 
         # attention with entity_embeds
         entity_embeds = self._encode_entity(record_embeds)

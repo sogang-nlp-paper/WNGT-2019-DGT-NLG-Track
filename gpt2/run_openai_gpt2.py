@@ -120,15 +120,15 @@ def pre_process_datasets(device, src, tgt, pad_token, vocab_size):
             src_max_len = max(src_max_len, max([len(e) for e in entity]))
 
     record_vocab_mask = torch.zeros(vocab_size).to(device)
-    for record in src:
-        for entity in record:
-            for i, elem in enumerate(entity):
-                for e in elem:
-                    record_vocab_mask[int(e)] = 1
-                pad_size = src_max_len - len(elem)
+    for records in src:
+        for record in records:
+            for e in record[0]:  # for copy y_t = r_{j, 1}, only for value in each record
+                record_vocab_mask[int(e)] = 1
+            for i, feat in enumerate(record):  # for padding
+                pad_size = src_max_len - len(feat)
                 if pad_size > 0:
-                    entity[i] = elem + ([0] * pad_size)
-                assert len(entity[i]) == src_max_len
+                    record[i] = feat + ([0] * pad_size)
+                assert len(record[i]) == src_max_len
 
     # padding for tgt
     tgt_max_len = min(max([len(summary) for summary in tgt]), DEC_MAX_LEN)
