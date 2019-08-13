@@ -95,7 +95,16 @@ def load_rotowire_dataset(dataset_path, _type="train", index=False):
     src_data = []
     with open(src_path, encoding='utf_8') as f:
         for line in f.readlines():
-            src_data.append([[x for x in t.split('￨')] for t in line.split()])
+            record = []
+            for r in line.split():
+                feat = []
+                for i, ff in enumerate(r.split('￨')):
+                    if i == 0:
+                        feat.append("; " + ff)
+                    else:
+                        feat.append(ff)
+                record.append(feat)
+            src_data.append(record)
 
     with open(tgt_path, encoding='utf_8') as f:
         tgt_data = [line for line in f.readlines()]
@@ -121,14 +130,15 @@ def pre_process_datasets(device, src, tgt, pad_token, vocab_size):
 
     record_vocab_mask = torch.zeros(vocab_size).to(device)
     for records in src:
-        for record in records:
-            for e in record[0]:  # for copy y_t = r_{j, 1}, only for value in each record
+        for j, _ in enumerate(records):
+            records[j][0] = records[j][0][1:]
+            for e in records[j][0]:  # for copy y_t = r_{j, 1}, only for value in each record
                 record_vocab_mask[int(e)] = 1
-            for i, feat in enumerate(record):  # for padding
+            for i, feat in enumerate(records[j]):  # for padding
                 pad_size = src_max_len - len(feat)
                 if pad_size > 0:
-                    record[i] = feat + ([0] * pad_size)
-                assert len(record[i]) == src_max_len
+                    records[j][i] = feat + ([0] * pad_size)
+                assert len(records[j][i]) == src_max_len
 
     # padding for tgt
     tgt_max_len = min(max([len(summary) for summary in tgt]), DEC_MAX_LEN)
