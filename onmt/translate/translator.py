@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 """ Translator Class and builder """
 from __future__ import print_function
+
 import codecs
 import os
 import math
@@ -631,12 +632,15 @@ class Translator(object):
         self.model.decoder.map_state(
             lambda state, dim: tile(state, beam_size, dim=dim))
 
-        if isinstance(memory_bank, tuple):
-            memory_bank = tuple(tile(x, beam_size, dim=1) for x in memory_bank)
-            mb_device = memory_bank[0].device
-        else:
-            memory_bank = tile(memory_bank, beam_size, dim=1)
-            mb_device = memory_bank.device
+
+        for name, memory in memory_bank.items():
+            dim = 1 if name == 'emb' else 0
+            if isinstance(memory, tuple):
+                memory_bank[name] = tuple(tile(x, beam_size, dim=dim) for x in memory)
+                mb_device = memory[0].device
+            else:
+                memory_bank[name] = tile(memory, beam_size, dim=dim)
+                mb_device = memory.device
         memory_lengths = tile(src_lengths, beam_size)
 
         # (0) pt 2, prep the beam object
@@ -682,11 +686,13 @@ class Translator(object):
 
             if any_beam_is_finished:
                 # Reorder states.
-                if isinstance(memory_bank, tuple):
-                    memory_bank = tuple(x.index_select(1, select_indices)
-                                        for x in memory_bank)
-                else:
-                    memory_bank = memory_bank.index_select(1, select_indices)
+                for name, memory in memory_bank.items():
+                    dim = 1 if name == 'emb' else 0
+                    if isinstance(memory, tuple):
+                        memory_bank[name] = tuple(x.index_select(dim, select_indices)
+                                            for x in memory)
+                    else:
+                        memory_bank[name] = memory.index_select(dim, select_indices)
 
                 memory_lengths = memory_lengths.index_select(0, select_indices)
 
