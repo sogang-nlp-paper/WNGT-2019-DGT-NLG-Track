@@ -175,7 +175,7 @@ def validate(model, device, n_gpu, eval_dataloader, vocab_mask):
         loss_fct = CrossEntropyLoss(ignore_index=-1)
         loss_lm = loss_fct(lm_logits.view(-1, lm_logits.size(-1)),
                            labels.view(-1))
-        gate = outputs[-1]
+        gate = outputs[-1][:, :-1, :].contiguous()
         loss_gate = BCELoss()(gate.view(-1), copy_labels.view(-1))
         loss = (loss_lm + loss_gate) / 2
         if n_gpu > 1:
